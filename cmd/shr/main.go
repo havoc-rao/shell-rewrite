@@ -5,7 +5,7 @@ package main
 import (
 	"os"
 
-	"github.com/havoc420/shr/cli"
+	"github.com/havoc-rao/shell-rewrite/cli"
 )
 
 func main() {

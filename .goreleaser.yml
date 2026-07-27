@@ -1,0 +1,59 @@
+# GoReleaser 配置：tag 推送时交叉编译多平台二进制并发布到 GitHub Releases。
+# 文档：https://goreleaser.com
+version: 2
+
+project_name: shr
+
+builds:
+  - id: shr
+    main: ./cmd/shr
+    binary: shr
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      # Version 由 go:embed VERSION 提供（单一真相源），此处只注入 git 元信息。
+      - -X github.com/havoc-rao/shell-rewrite/cli.Commit={{.ShortCommit}}
+      - -X github.com/havoc-rao/shell-rewrite/cli.Date={{.Date}}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "Merge pull request"
+      - "Merge branch"
+
+release:
+  draft: false
+  prerelease: auto
+  github:
+    owner: havoc-rao
+    name: shell-rewrite

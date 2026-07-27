@@ -8,7 +8,15 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/havoc420/shr/core"
+	"github.com/havoc-rao/shell-rewrite/core"
+	"github.com/havoc-rao/shell-rewrite/version"
+)
+
+// 版本信息：Version 来自 VERSION 文件（go:embed 嵌入），Commit/Date 由 goreleaser 注入。
+var (
+	Version = version.Version
+	Commit  = "none"
+	Date    = "unknown"
 )
 
 const usageText = `shr — shell command shortener: rewrite commands by rules before execution
@@ -59,7 +67,7 @@ func Run(args []string) int {
 		fmt.Println(core.Path())
 		return 0
 	case "version", "-version", "--version", "-v":
-		fmt.Println("shr 0.1.0")
+		fmt.Printf("shr %s (commit %s, built %s)\n", Version, Commit, Date)
 		return 0
 	case "help", "-h", "--help":
 		fmt.Print(usageText)

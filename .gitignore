@@ -1,0 +1,16 @@
+# Compiled binary
+/shr
+/shr.exe
+
+# Build output
+/output/
+/dist/
+
+# Go test artifacts
+*.test
+*.out
+
+# macOS
+.DS_Store
+
+docs/developer

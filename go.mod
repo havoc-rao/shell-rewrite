@@ -1,4 +1,4 @@
-module github.com/havoc420/shr
+module github.com/havoc-rao/shell-rewrite
 
 go 1.21
 

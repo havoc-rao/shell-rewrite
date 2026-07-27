@@ -22,14 +22,36 @@ git lg                  →  git log --oneline --graph --all
 
 ## 安装
 
+### 方式一：一键脚本（推荐，无需 Go）
+
 ```bash
-git clone <repo> && cd shr
-go build -o shr .
-cp shr /usr/local/bin/   # 或任意 PATH 中的目录
+curl -fsSL https://raw.githubusercontent.com/havoc-rao/shell-rewrite/main/scripts/install.sh | sh
+```
+
+自动检测平台、下载 GitHub Releases 中最新的预编译二进制，安装到 `/usr/local/bin`（无写权限时落到 `~/.local/bin`）。覆盖执行即更新。
+
+### 方式二：go install（需 Go 环境）
+
+```bash
+go install github.com/havoc-rao/shell-rewrite/cmd/shr@latest   # 安装/更新同一条命令
+go install github.com/havoc-rao/shell-rewrite/cmd/shr@v0.1.0   # 指定版本
+```
+
+### 方式三：手动下载
+
+前往 [Releases](https://github.com/havoc-rao/shell-rewrite/releases) 下载对应平台的压缩包（`shr_<版本>_<os>_<arch>.tar.gz`），解压后将 `shr` 放入 `PATH`。
+
+### 从源码构建
+
+```bash
+git clone https://github.com/havoc-rao/shell-rewrite && cd shell-rewrite
+make build                 # 产物输出到 dist/shr
+cp dist/shr /usr/local/bin   # 或任意 PATH 中的目录
 ```
 
 > 若目录不在 git 仓库中，Go 会因 VCS 标记报错，改用
 > `go build -buildvcs=false -o shr .`，或执行 `go env -w GOFLAGS=-buildvcs=false` 永久关闭。
+> 也可直接 `go install github.com/havoc-rao/shell-rewrite/cmd/shr@latest`。
 
 ## 接入 shell
 

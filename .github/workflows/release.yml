@@ -1,0 +1,59 @@
+name: release
+
+# 改 version/VERSION 文件并 push 即自动发版：CI 读取 version/VERSION 内容、自动打 tag、触发 goreleaser。
+on:
+  push:
+    branches: [main]
+    paths:
+      - version/VERSION
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Read version
+        id: ver
+        run: |
+          v="$(tr -d '[:space:]' < version/VERSION)"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $v"
+
+      - name: Check if tag already exists
+        id: tag
+        run: |
+          if git ls-remote --tags origin "refs/tags/v${{ steps.ver.outputs.version }}" | grep -q .; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag v${{ steps.ver.outputs.version }} already exists, skipping."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push tag
+        if: steps.tag.outputs.exists == 'false'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "v${{ steps.ver.outputs.version }}"
+          git push origin "v${{ steps.ver.outputs.version }}"
+
+      - name: Run GoReleaser
+        if: steps.tag.outputs.exists == 'false'
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
