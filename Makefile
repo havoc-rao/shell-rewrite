@@ -46,9 +46,10 @@ release:
 snapshot:
 	goreleaser release --snapshot --clean
 
-## install: 编译并安装到 $GOPATH/bin（基于本地源码，非远程拉取）
-install:
-	go install -ldflags "$(LDFLAGS)" ./cmd/shr
+## install: 编译并安装到 /usr/local/bin（先 build 再 cp，共用 dist/shr 产物）
+install: build
+	cp $(DIST)/$(BINARY) /usr/local/bin/$(BINARY)
+	@echo "✓ 已安装到 /usr/local/bin/$(BINARY)"
 
 ## test: 运行测试
 test:

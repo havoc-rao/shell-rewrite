@@ -15,11 +15,13 @@
     },
     {
       "label": "shr: install",
-      "detail": "make install  (go install 到 $GOPATH/bin)",
+      "detail": "make install  (build + cp 到 /usr/local/bin)",
       "type": "shell",
       "command": "make",
       "args": ["install"],
-      "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$go"],
+      "options": { "cwd": "${workspaceFolder}" },
       "presentation": { "reveal": "silent", "panel": "shared" }
     }
   ]
