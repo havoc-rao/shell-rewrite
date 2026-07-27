@@ -1,0 +1,28 @@
+{
+  // See https://go.microsoft.com/fwlink/?LinkId=733558
+  // for the documentation about the tasks.json format
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "shr: build",
+      "detail": "go build -o shr .  (输出到项目根)",
+      "type": "shell",
+      "command": "go",
+      "args": ["build", "-o", "shr", "."],
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$go"],
+      "options": { "cwd": "${workspaceFolder}" }
+    },
+    {
+      "label": "shr: install",
+      "detail": "先 build 再 cp → /usr/local/bin/shr",
+      "type": "shell",
+      "command": "cp",
+      "args": ["${workspaceFolder}/shr", "/usr/local/bin/shr"],
+      "dependsOn": "shr: build",
+      "dependsOrder": "sequence",
+      "problemMatcher": [],
+      "presentation": { "reveal": "silent", "panel": "shared" }
+    }
+  ]
+}

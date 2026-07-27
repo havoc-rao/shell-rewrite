@@ -36,6 +36,13 @@ _shr_mtime() {
   stat -f %m "$_SHR_CONFIG" 2>/dev/null || stat -c %Y "$_SHR_CONFIG" 2>/dev/null || echo 0
 }
 
+# 缩写命中时回显展开后的命令：暗色输出到 stderr，仅交互式终端；
+# SHR_ECHO=0 可关闭
+_shr_echo() {
+  [ "${SHR_ECHO:-1}" = "1" ] && [ -t 2 ] || return 0
+  printf '\033[2m↪ %s\033[0m\n' "$*" >&2
+}
+
 `
 
 const posixReloadFunc = `_shr_reload_if_stale() {
@@ -93,18 +100,44 @@ func genCase(b *strings.Builder, node *Node, prefix []string, ind int) {
 
 	for _, abbr := range sortedKeys(node.Rules) {
 		toks := strings.Fields(node.Rules[abbr])
-		child, drill := node.Children[toks[0]]
-		if drill && len(toks) == 1 {
-			fmt.Fprintf(b, "%s  %s|%s)\n", pad, abbr, toks[0])
-			b.WriteString(pad + "    shift\n")
-			genCase(b, child, appendToks(prefix, toks[0]), ind+2)
-			b.WriteString(pad + "    ;;\n")
-			merged[toks[0]] = true
-			continue
+		word := toks[0]
+		child, drill := node.Children[word]
+		drill = drill && len(toks) == 1
+
+		// 计算 case pattern 列表
+		var pats []string
+		if strings.HasSuffix(abbr, "+") {
+			// 前缀规则："b+" → branch 展开为 b|br|bra|bran|branc；
+			// 让位顺序与 matchPrefix 一致：精确规则 > 更长 base 的前缀规则
+			base := strings.TrimSuffix(abbr, "+")
+			for _, p := range Prefixes(base, word) {
+				if _, exact := node.Rules[p]; exact {
+					continue
+				}
+				if shadowedByLongerPrefix(node, abbr, base, p) {
+					continue
+				}
+				pats = append(pats, p)
+			}
+		} else {
+			pats = []string{abbr}
 		}
-		fmt.Fprintf(b, "%s  %s)\n", pad, abbr)
+		if drill {
+			pats = append(pats, word) // 下钻需要原词入口
+		}
+		if len(pats) == 0 {
+			continue // 前缀被精确规则全覆盖
+		}
+
+		fmt.Fprintf(b, "%s  %s)\n", pad, strings.Join(pats, "|"))
 		b.WriteString(pad + "    shift\n")
-		fmt.Fprintf(b, "%s    command %s \"$@\"\n", pad, quoteAll(appendToks(prefix, toks...)))
+		if drill {
+			genCase(b, child, appendToks(prefix, word), ind+2)
+			merged[word] = true
+		} else {
+			fmt.Fprintf(b, "%s    _shr_echo %s \"$@\"\n", pad, quoteAll(appendToks(prefix, toks...)))
+			fmt.Fprintf(b, "%s    command %s \"$@\"\n", pad, quoteAll(appendToks(prefix, toks...)))
+		}
 		b.WriteString(pad + "    ;;\n")
 	}
 
@@ -123,6 +156,23 @@ func genCase(b *strings.Builder, node *Node, prefix []string, ind int) {
 
 	fmt.Fprintf(b, "%s  *) command %s \"$@\" ;;\n", pad, quoteAll(prefix))
 	b.WriteString(pad + "esac\n")
+}
+
+// shadowedByLongerPrefix 判断前缀 p 是否会被另一条 base 更长的前缀规则捕获
+//（与 matchPrefix 的"最长 base 优先"语义保持一致，避免 case 顺序匹配产生歧义）。
+func shadowedByLongerPrefix(node *Node, self, base, p string) bool {
+	for key, target := range node.Rules {
+		if key == self || !strings.HasSuffix(key, "+") {
+			continue
+		}
+		base2 := strings.TrimSuffix(key, "+")
+		word2 := strings.Fields(target)[0]
+		if len(base2) > len(base) && len(p) >= len(base2) &&
+			len(p) < len(word2) && strings.HasPrefix(word2, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func appendToks(prefix []string, toks ...string) []string {

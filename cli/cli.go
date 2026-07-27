@@ -28,6 +28,7 @@ Examples:
   shr add git lg "log --oneline --graph"
   shr add colink data u upload          # colink data u → colink data upload
   shr add colink d data                 # colink d u    → colink data upload (drill-through)
+  shr add git b+ branch                 # git b / br / bra / bran / branc → git branch (prefix)
 
 Setup (zsh):  echo 'eval "$(shr init zsh)"' >> ~/.zshrc
 Setup (bash): echo 'eval "$(shr init bash)"' >> ~/.bashrc
@@ -57,7 +58,7 @@ func Run(args []string) int {
 	case "path":
 		fmt.Println(core.Path())
 		return 0
-	case "version":
+	case "version", "-version", "--version", "-v":
 		fmt.Println("shr 0.1.0")
 		return 0
 	case "help", "-h", "--help":
@@ -166,7 +167,14 @@ func printNode(n *core.Node, pad string) {
 		}
 	}
 	for _, k := range sortedKeys(n.Rules) {
-		fmt.Printf("%s%-*s → %s\n", pad, width, k, n.Rules[k])
+		v := n.Rules[k]
+		if strings.HasSuffix(k, "+") {
+			word := strings.Fields(v)[0]
+			fmt.Printf("%s%-*s → %s  (%s)\n", pad, width, k, v,
+				strings.Join(core.Prefixes(strings.TrimSuffix(k, "+"), word), ", "))
+			continue
+		}
+		fmt.Printf("%s%-*s → %s\n", pad, width, k, v)
 	}
 	for _, name := range sortedKeys(n.Children) {
 		fmt.Printf("%s%s/\n", pad, name)

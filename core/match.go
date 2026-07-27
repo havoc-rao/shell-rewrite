@@ -21,26 +21,52 @@ func (c *Config) Expand(argv []string) []string {
 	i := 1
 	for i < len(argv) {
 		t := argv[i]
-		if exp, ok := node.Rules[t]; ok {
-			toks := strings.Fields(exp)
-			out = append(out, toks...)
-			i++
-			// 单 token 展开值且存在同名子表 → 下钻继续匹配
-			if len(toks) == 1 {
-				if child, ok2 := node.Children[toks[0]]; ok2 {
-					node = child
-					continue
-				}
+		// 优先级：精确规则 > 命名空间下钻 > 前缀规则 > 透传
+		exp, ok := node.Rules[t]
+		if !ok {
+			if child, ok2 := node.Children[t]; ok2 {
+				out = append(out, t)
+				node = child
+				i++
+				continue
 			}
-			break // 普通叶子或多 token 展开是终点
+			exp, ok = matchPrefix(node, t)
 		}
-		if child, ok := node.Children[t]; ok {
-			out = append(out, t)
-			node = child
-			i++
-			continue
+		if !ok {
+			break // 失配，剩余透传
 		}
-		break // 失配，剩余透传
+		toks := strings.Fields(exp)
+		out = append(out, toks...)
+		i++
+		// 单 token 展开值且存在同名子表 → 下钻继续匹配
+		if len(toks) == 1 {
+			if child, ok2 := node.Children[toks[0]]; ok2 {
+				node = child
+				continue
+			}
+		}
+		break // 普通叶子或多 token 展开是终点
 	}
 	return append(out, argv[i:]...)
+}
+
+// matchPrefix 查找前缀规则：key 形如 "b+"，当 t 是目标词的前缀、
+// 长度不短于 base、且不等于目标词时命中。多个命中时取 base 最长（最具体）者。
+func matchPrefix(n *Node, t string) (string, bool) {
+	best := ""
+	bestLen := -1
+	for key, target := range n.Rules {
+		if !strings.HasSuffix(key, "+") {
+			continue
+		}
+		base := key[:len(key)-1]
+		if len(t) < len(base) {
+			continue
+		}
+		word := strings.Fields(target)[0]
+		if len(t) < len(word) && strings.HasPrefix(word, t) && len(base) > bestLen {
+			best, bestLen = target, len(base)
+		}
+	}
+	return best, bestLen >= 0
 }

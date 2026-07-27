@@ -59,8 +59,12 @@ func (c *Config) Add(cmd string, path []string, expansion string) (overwritten b
 	if len(path) == 0 {
 		return false, fmt.Errorf("缺少缩写路径")
 	}
-	for _, p := range path {
-		if !nameRe.MatchString(p) {
+	for i, p := range path {
+		name := p
+		if i == len(path)-1 {
+			name = strings.TrimSuffix(p, "+") // 末位允许 + 后缀表示前缀模式
+		}
+		if !nameRe.MatchString(name) {
 			return false, fmt.Errorf("非法路径片段 %q（仅允许字母、数字和 . _ -）", p)
 		}
 	}
@@ -90,12 +94,31 @@ func (c *Config) Add(cmd string, path []string, expansion string) (overwritten b
 	}
 
 	last := path[len(path)-1]
-	if _, ok := node.Children[last]; ok {
-		return false, fmt.Errorf("%q 已是命名空间，不能再定义为缩写（可先 shr remove 删除其下规则）", last)
+	base := last
+	if strings.HasSuffix(last, "+") {
+		// 前缀模式："b+" = "branch" 表示 b、br、bra、bran、branc 均展开为 branch
+		base = strings.TrimSuffix(last, "+")
+		word := strings.Fields(expansion)[0]
+		if base == "" || len(word) <= len(base) || !strings.HasPrefix(word, base) {
+			return false, fmt.Errorf("前缀规则 %q 要求展开值首词 %q 以 %q 开头且更长", last, word, base)
+		}
+	}
+	if _, ok := node.Children[base]; ok {
+		return false, fmt.Errorf("%q 已是命名空间，不能再定义为缩写（可先 shr remove 删除其下规则）", base)
 	}
 	_, overwritten = node.Rules[last]
 	node.Rules[last] = expansion
 	return overwritten, nil
+}
+
+// Prefixes 返回 word 从 len(base) 开始的逐字符前缀（不含 word 本身）。
+// 用于前缀规则（"b+" → branch）展开为 case pattern 与展示。
+func Prefixes(base, word string) []string {
+	var out []string
+	for l := len(base); l < len(word); l++ {
+		out = append(out, word[:l])
+	}
+	return out
 }
 
 // Remove 删除一条规则或整个命名空间，并回收空节点。返回是否删除成功。
@@ -157,14 +180,20 @@ func checkNode(n *Node, prefix []string) []string {
 	var out []string
 	at := strings.Join(prefix, " ")
 	for abbr, exp := range n.Rules {
-		if !nameRe.MatchString(abbr) {
+		isPrefix := strings.HasSuffix(abbr, "+")
+		base := strings.TrimSuffix(abbr, "+")
+		if !nameRe.MatchString(base) {
 			out = append(out, fmt.Sprintf("%s: 缩写 %q 含非法字符", at, abbr))
 		}
-		if _, ok := n.Children[abbr]; ok {
+		if _, ok := n.Children[base]; ok {
 			out = append(out, fmt.Sprintf("%s: %q 既是缩写（→ %q）又是命名空间，行为有歧义", at, abbr, exp))
 		}
 		toks := strings.Fields(exp)
-		if len(toks) > 1 {
+		if isPrefix {
+			if len(toks[0]) <= len(base) || !strings.HasPrefix(toks[0], base) {
+				out = append(out, fmt.Sprintf("%s: 前缀规则 %q 的目标 %q 不以 %q 开头或不够长", at, abbr, exp, base))
+			}
+		} else if len(toks) > 1 {
 			if _, ok := n.Children[toks[0]]; ok {
 				out = append(out, fmt.Sprintf("%s: 缩写 %q 的展开值 %q 带参数，其首词 %q 又有子命名空间，下钻不会发生", at, abbr, exp, toks[0]))
 			}

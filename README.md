@@ -14,7 +14,9 @@ git lg                  →  git log --oneline --graph --all
 
 - **多层缩写**：`colink data u` → `colink data upload`，层级任意嵌套
 - **下钻组合**：中间层也可定义缩写，`colink d u` 与 `colink data u` 等价
+- **前缀模式**：`"b+" = "branch"` 一条规则覆盖 `b`、`br`、`bra`、`bran`、`branc`
 - **零运行时开销**：规则编译成 shell 嵌套 `case` 函数，执行时不fork外部进程
+- **展开回显**：缩写命中时以暗色打印展开后的完整命令（`SHR_ECHO=0` 关闭，非交互终端自动禁用）
 - **热加载**：每次渲染提示符前检测配置变更，自动重新编译（zsh/bash）
 - **安全透传**：token 失配即停止匹配，剩余参数原样保留，flag 值永远不会被误展开
 
@@ -48,6 +50,7 @@ shr add git co checkout               # git co → git checkout
 shr add git lg "log --oneline --graph --all"
 shr add colink data u upload          # 多层：colink data u → colink data upload
 shr add colink d data                 # 下钻：colink d u → colink data upload
+shr add git b+ branch                 # 前缀：git b / br / bra / bran / branc → git branch
 
 shr list                              # 树形查看全部规则
 shr expand colink d u --file x        # 预览展开结果（调试）
@@ -57,11 +60,13 @@ shr doctor                            # 校验规则冲突
 
 ## 规则语义
 
-匹配采用**逐 token 下钻**，遵循三条边界规则：
+匹配采用**逐 token 下钻**，每个 token 的优先级为：**精确规则 > 命名空间下钻 > 前缀规则 > 透传**。并遵循三条边界规则：
 
 1. **替换值不二次展开** —— 天然防环；
-2. **失配即整体透传** —— 某 token 既不命中缩写也无同名命名空间时，从它开始剩余全部原样保留（`git commit -m "co fix"` 中的 `co` 不会被展开）；
+2. **失配即整体透传** —— 某 token 无任何命中时，从它开始剩余全部原样保留（`git commit -m "co fix"` 中的 `co` 不会被展开）；
 3. **下钻用展开后的名字** —— `d = "data"` 命中后可继续匹配 `[colink.data]` 下的规则。
+
+**前缀规则**：key 以 `+` 结尾（`"b+" = "branch"`）表示从 `b` 开始的所有前缀都命中目标；多个前缀规则重叠时取最长 base（如 `br+` 比 `b+` 更具体）；前缀规则的目标有子命名空间时同样支持下钻（`"d+" = "data"` 后 `colink da u` 可用）。
 
 ## 配置文件
 
@@ -78,6 +83,7 @@ d = "download"
 
 [git]
 co = "checkout"
+"b+" = "branch"                      # 前缀模式：b、br、bra、bran、branc 均可
 lg = "log --oneline --graph --all"   # 展开值可带参数（作为终点）
 
 [git.submodule]
