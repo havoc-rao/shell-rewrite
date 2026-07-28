@@ -30,30 +30,60 @@ if [ ! -d "$BINDIR" ] || [ ! -w "$BINDIR" ]; then
 fi
 mkdir -p "$BINDIR"
 
-# ---- resolve latest release & matching asset ----
-API_URL="https://api.github.com/repos/$OWNER/$REPO/releases/latest"
-echo "shr: resolving latest release..."
-ASSETS=$(curl -fsSL "$API_URL" | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p')
+# ---- archive extension by OS ----
+case "$OS" in
+  windows) EXT="zip" ;;
+  *)       EXT="tar.gz" ;;
+esac
 
-URL=$(echo "$ASSETS" | grep -Ei "_${OS}_${ARCH}\.(tar\.gz|zip)$" | head -n1 || true)
-if [ -z "$URL" ]; then
-  echo "shr: no prebuilt binary for $OS/$ARCH." >&2
-  echo "shr: available assets:" >&2
-  echo "$ASSETS" | sed 's/^/  /' >&2
-  echo "shr: or install via Go:  go install github.com/$OWNER/$REPO@latest" >&2
+# ---- resolve latest release tag ----
+# Primary: follow the github.com redirect (releases/latest → releases/tag/vX.Y.Z).
+# This endpoint is NOT subject to api.github.com rate limits (60 req/h/IP).
+echo "shr: resolving latest release..."
+TAG=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+  "https://github.com/$OWNER/$REPO/releases/latest" 2>/dev/null \
+  | sed 's|.*/tag/||' || true)
+
+# Fallback: query the API (optionally authenticated via GITHUB_TOKEN / GH_TOKEN
+# to bypass the 60 req/h unauthenticated limit on shared cloud IPs).
+if [ -z "$TAG" ] || [ "$TAG" = "https://github.com/$OWNER/$REPO/releases/latest" ]; then
+  API_URL="https://api.github.com/repos/$OWNER/$REPO/releases/latest"
+  TOKEN="${GITHUB_TOKEN:-}"
+  [ -z "$TOKEN" ] && TOKEN="${GH_TOKEN:-}"
+  if [ -n "$TOKEN" ]; then
+    TAG=$(curl -fsSL -H "Authorization: Bearer $TOKEN" "$API_URL" 2>/dev/null \
+      | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' || true)
+  else
+    TAG=$(curl -fsSL "$API_URL" 2>/dev/null \
+      | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' || true)
+  fi
+fi
+
+if [ -z "$TAG" ]; then
+  echo "shr: could not resolve latest release (network issue or API rate limit)." >&2
+  echo "shr: set GITHUB_TOKEN to bypass rate limit, or install via Go:" >&2
+  echo "  go install github.com/$OWNER/$REPO/cmd/$BINARY@latest" >&2
   exit 1
 fi
+
+VERSION="${TAG#v}"  # strip leading 'v'
+URL="https://github.com/$OWNER/$REPO/releases/download/$TAG/shr_${VERSION}_${OS}_${ARCH}.${EXT}"
 
 # ---- download & extract ----
 echo "shr: downloading $URL"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 cd "$TMP"
-curl -fsSL -o archive "$URL"
+curl -fsSL -o archive "$URL" || {
+  echo "shr: download failed for $OS/$ARCH." >&2
+  echo "shr: browse available assets:  https://github.com/$OWNER/$REPO/releases/tag/$TAG" >&2
+  echo "shr: or install via Go:  go install github.com/$OWNER/$REPO/cmd/$BINARY@latest" >&2
+  exit 1
+}
 
-case "$URL" in
-  *.tar.gz) tar -xzf archive ;;
-  *.zip)    unzip -oq archive ;;
+case "$EXT" in
+  tar.gz) tar -xzf archive ;;
+  zip)    unzip -oq archive ;;
 esac
 
 # ---- locate & install binary ----
