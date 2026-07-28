@@ -89,6 +89,8 @@ shr list                              # 树形查看全部规则
 shr expand colink d u --file x        # 预览展开结果（调试）
 shr remove colink data u              # 删除规则（也可删整个命名空间）
 shr doctor                            # 校验规则冲突
+shr off                               # 临时关闭复写（命令直通，规则保留）
+shr on                                # 恢复复写
 ```
 
 ## 规则语义
@@ -160,6 +162,8 @@ colink() {
 | `shr expand <argv...>` | 显示命令行的展开结果 |
 | `shr doctor` | 校验规则冲突 |
 | `shr path` | 打印配置文件路径 |
+| `shr on` / `shr off` | 开启/关闭复写（关闭后 wrapper 退化为透传，下一个提示符生效） |
+| `shr status` | 查看复写开关状态 |
 | `shr update [version] [--check]` | 从 GitHub Releases 自更新到最新（或指定）版本 |
 
 ## 路线图

@@ -27,13 +27,16 @@ func (n *Node) empty() bool {
 }
 
 // Config 持有全部根命令（argv[0]）的规则树。
+// Enabled 控制是否实际复写：为 false 时生成的 wrapper 退化为透传
+// （command <cmd> "$@"），规则本身保留，可随时 shr on 恢复。
 type Config struct {
-	Roots map[string]*Node
+	Roots   map[string]*Node
+	Enabled bool
 }
 
-// NewConfig 创建空配置。
+// NewConfig 创建空配置（默认开启复写）。
 func NewConfig() *Config {
-	return &Config{Roots: map[string]*Node{}}
+	return &Config{Roots: map[string]*Node{}, Enabled: true}
 }
 
 var (
@@ -53,6 +56,9 @@ var (
 //
 // 返回 overwritten 表示覆盖了同名规则。
 func (c *Config) Add(cmd string, path []string, expansion string) (overwritten bool, err error) {
+	if cmd == metaKey {
+		return false, fmt.Errorf("%q 是保留命令名", cmd)
+	}
 	if !cmdRe.MatchString(cmd) {
 		return false, fmt.Errorf("非法命令名 %q（需可作为 shell 函数名）", cmd)
 	}

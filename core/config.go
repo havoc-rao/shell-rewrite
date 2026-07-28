@@ -9,6 +9,10 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// metaKey 是 rules.toml 中保留的元信息表名，不作为命令根解析。
+// 其中 enabled 字段控制复写开关（shr on / shr off）。
+const metaKey = "__shr"
+
 // Path 返回规则文件路径：$XDG_CONFIG_HOME/shr/rules.toml 或 ~/.config/shr/rules.toml。
 func Path() string {
 	base := os.Getenv("XDG_CONFIG_HOME")
@@ -47,6 +51,14 @@ func LoadFrom(p string) (*Config, error) {
 		return nil, fmt.Errorf("解析 %s 失败: %w", p, err)
 	}
 	for cmd, v := range raw {
+		if cmd == metaKey {
+			if m, ok := v.(map[string]interface{}); ok {
+				if e, ok := m["enabled"].(bool); ok {
+					cfg.Enabled = e
+				}
+			}
+			continue
+		}
 		m, ok := v.(map[string]interface{})
 		if !ok {
 			return nil, fmt.Errorf("根命令 %q 必须是表", cmd)
@@ -98,7 +110,9 @@ func (c *Config) SaveTo(p string) error {
 }
 
 func (c *Config) toMap() map[string]interface{} {
-	out := map[string]interface{}{}
+	out := map[string]interface{}{
+		metaKey: map[string]interface{}{"enabled": c.Enabled},
+	}
 	for cmd, n := range c.Roots {
 		out[cmd] = nodeToMap(n)
 	}

@@ -69,13 +69,24 @@ esac
 `
 
 // GenPosixFuncs 生成全部 wrapper 函数（bash/zsh 通用），热加载时重新 eval 即可生效。
+// Enabled 为 false 时退化为透传函数（command <cmd> "$@"），保留函数定义以便
+// shr on 后热加载无缝恢复。
 func (c *Config) GenPosixFuncs() string {
 	var b strings.Builder
 	for _, cmd := range c.SortedRoots() {
-		b.WriteString(genFunc(cmd, c.Roots[cmd]))
+		if c.Enabled {
+			b.WriteString(genFunc(cmd, c.Roots[cmd]))
+		} else {
+			b.WriteString(genPassthrough(cmd))
+		}
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// genPassthrough 生成透传函数：复写关闭时仍覆盖同名 wrapper，确保命令直通。
+func genPassthrough(cmd string) string {
+	return fmt.Sprintf("%s() { command %s \"$@\"; }\n", cmd, cmd)
 }
 
 func genFunc(cmd string, node *Node) string {

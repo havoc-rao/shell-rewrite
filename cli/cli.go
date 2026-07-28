@@ -31,6 +31,9 @@ Usage:
   shr expand <argv...>                  show what a command expands to
   shr doctor                            check rules for conflicts
   shr path                              print rules file path
+  shr on                                enable rewriting (default)
+  shr off                               disable rewriting (passthrough)
+  shr status                            show whether rewriting is enabled
   shr update [version] [--check]        self-update from GitHub Releases
   shr version                           print version
 
@@ -70,6 +73,12 @@ func Run(args []string) int {
 	case "path":
 		fmt.Println(core.Path())
 		return 0
+	case "on", "enable":
+		return cmdToggle(true)
+	case "off", "disable":
+		return cmdToggle(false)
+	case "status":
+		return cmdStatus()
 	case "update":
 		return cmdUpdate(args[2:])
 	case "version", "-version", "--version", "-v":
@@ -210,6 +219,9 @@ func cmdRemove(args []string) int {
 
 func cmdList() int {
 	cfg := loadOrDie()
+	if !cfg.Enabled {
+		fmt.Println("(rewriting disabled — shr on to enable)")
+	}
 	if len(cfg.Roots) == 0 {
 		fmt.Println("no rules yet — try: shr add git co checkout")
 		return 0
@@ -274,6 +286,41 @@ func cmdGen(args []string) int {
 	}
 	cfg := loadOrDie()
 	fmt.Print(cfg.GenPosixFuncs())
+	return 0
+}
+
+// cmdToggle 开关复写：写入配置后 mtime 变化，下一个提示符前热加载重新生成
+// wrapper 函数（开启→正常 case，关闭→透传），无需重启 shell。
+func cmdToggle(enable bool) int {
+	cfg := loadOrDie()
+	if cfg.Enabled == enable {
+		if enable {
+			fmt.Println("shr: rewriting already enabled")
+		} else {
+			fmt.Println("shr: rewriting already disabled")
+		}
+		return 0
+	}
+	cfg.Enabled = enable
+	if err := cfg.Save(); err != nil {
+		fmt.Fprintln(os.Stderr, "shr:", err)
+		return 1
+	}
+	if enable {
+		fmt.Println("shr: rewriting enabled (takes effect at next prompt)")
+	} else {
+		fmt.Println("shr: rewriting disabled (takes effect at next prompt)")
+	}
+	return 0
+}
+
+func cmdStatus() int {
+	cfg := loadOrDie()
+	if cfg.Enabled {
+		fmt.Println("enabled")
+	} else {
+		fmt.Println("disabled")
+	}
 	return 0
 }
 
