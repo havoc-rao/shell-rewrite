@@ -10,6 +10,7 @@ import (
 
 	"github.com/havoc-rao/shell-rewrite/core"
 	"github.com/havoc-rao/shell-rewrite/version"
+	"golang.org/x/term"
 )
 
 // 版本信息：Version 来自 VERSION 文件（go:embed 嵌入），Commit/Date 由 goreleaser 注入。
@@ -22,7 +23,8 @@ var (
 const usageText = `shr — shell command shortener: rewrite commands by rules before execution
 
 Usage:
-  shr init [zsh|bash] [--install|--uninstall]   print / install / remove shell integration
+  shr init [zsh|bash]                   print shell integration code (for eval "$(shr init zsh)")
+  shr setup                             interactive setup wizard (TUI, writes rc)
   shr add <cmd> <path...> <expansion>   register a rule
   shr remove <cmd> <path...>            remove a rule or namespace
   shr list                              show all rules as a tree
@@ -39,8 +41,7 @@ Examples:
   shr add colink d data                 # colink d u    → colink data upload (drill-through)
   shr add git b+ branch                 # git b / br / bra / bran / branc → git branch (prefix)
 
-Setup (zsh):  shr init zsh --install        # or: echo 'eval "$(shr init zsh)"' >> ~/.zshrc
-Setup (bash): shr init bash --install       # or: echo 'eval "$(shr init bash)"' >> ~/.bashrc
+Setup:  shr setup   # interactive wizard (recommended), or: echo 'eval "$(shr init zsh)"' >> ~/.zshrc
 `
 
 // Run 执行 CLI，返回进程退出码。
@@ -52,6 +53,8 @@ func Run(args []string) int {
 	switch args[1] {
 	case "init":
 		return cmdInit(args[2:])
+	case "setup":
+		return cmdSetup(args[2:])
 	case "add":
 		return cmdAdd(args[2:])
 	case "remove", "rm":
@@ -94,9 +97,9 @@ const initTTYHintTpl = `shr: 'init' prints shell code that must be evaluated int
 
 You ran it directly — the code was NOT loaded. Enable shr with one of:
 
-  shr init %[1]s --install                  # auto-add the eval line to ~/%[2]s (recommended)
-  eval "$(shr init %[1]s)"                  # load for the current shell only
-  echo 'eval "$(shr init %[1]s)"' >> ~/%[2]s   # or append manually (then: source ~/%[2]s)
+  shr setup                                  # interactive wizard (writes rc, recommended)
+  eval "$(shr init %[1]s)"                   # load for the current shell only
+  echo 'eval "$(shr init %[1]s)"' >> ~/%[2]s # or append manually (then: source ~/%[2]s)
 
 To just inspect the generated code without loading, pipe it:
 
@@ -105,49 +108,21 @@ To just inspect the generated code without loading, pipe it:
 `
 
 func cmdInit(args []string) int {
-	var shell, rcPath string
-	install, uninstall := false, false
-
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--install" || a == "-i":
-			install = true
-		case a == "--uninstall" || a == "--remove":
-			uninstall = true
-		case a == "--rc":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "shr init: --rc requires a path")
-				return 2
-			}
-			i++
-			rcPath = args[i]
-		case strings.HasPrefix(a, "--rc="):
-			rcPath = strings.TrimPrefix(a, "--rc=")
-		case strings.HasPrefix(a, "-") && a != "-":
+	shell := ""
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") && a != "-" {
 			fmt.Fprintf(os.Stderr, "shr init: unknown flag %q (see: shr help)\n", a)
 			return 2
-		default:
-			if shell == "" {
-				shell = a
-			} else {
-				fmt.Fprintf(os.Stderr, "shr init: unexpected argument %q\n", a)
-				return 2
-			}
 		}
-	}
-
-	if install && uninstall {
-		fmt.Fprintln(os.Stderr, "shr init: --install and --uninstall are mutually exclusive")
-		return 2
+		if shell == "" {
+			shell = a
+		} else {
+			fmt.Fprintf(os.Stderr, "shr init: unexpected argument %q\n", a)
+			return 2
+		}
 	}
 	if shell == "" {
 		shell = filepath.Base(os.Getenv("SHELL"))
-	}
-
-	// --install / --uninstall：写/删 rc 文件，无需加载规则、也不受 TTY 检测影响。
-	if install || uninstall {
-		return installToRc(shell, rcPath, uninstall)
 	}
 
 	cfg := loadOrDie()
@@ -178,14 +153,10 @@ func rcFile(shell string) string {
 	}
 }
 
-// isTerminal 通过 os.File 的模式判断是否为字符设备（交互式终端），
-// 仅用标准库、零依赖；管道/重定向时返回 false。
+// isTerminal 判断文件描述符是否为交互式终端（用 golang.org/x/term 的 ioctl 检测，
+// 比 os.ModeCharDevice 更准确——后者会把 /dev/null 这类字符设备误判为终端）。
 func isTerminal(f *os.File) bool {
-	fi, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(f.Fd()))
 }
 
 func cmdAdd(args []string) int {

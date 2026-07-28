@@ -25,12 +25,16 @@ git lg                  →  git log --oneline --graph --all
 ### 方式一：一键脚本（推荐，无需 Go）
 
 ```bash
+# 安装后启动交互式配置向导（选 shell / 加 PATH / 写 rc），重启 shell 生效：
 curl -fsSL https://raw.githubusercontent.com/havoc-rao/shell-rewrite/main/scripts/install.sh | sh
+
+# 或安装 + 非交互写 rc，并立即在当前 shell 生效（无需重启）：
+eval "$(curl -fsSL https://raw.githubusercontent.com/havoc-rao/shell-rewrite/main/scripts/install.sh | sh)"
 ```
 
-自动检测平台、下载 GitHub Releases 中最新的预编译二进制，安装到 `/usr/local/bin`（无写权限时落到 `~/.local/bin`）。覆盖执行即更新。
+自动检测平台、下载 GitHub Releases 中最新的预编译二进制，安装到 `/usr/local/bin`（无写权限时落到 `~/.local/bin` 并自动把它加入 PATH）。`curl | sh` 形式会在装完后启动 `shr setup` 交互向导；`eval "$(...)"` 形式则非交互写入 rc 并让当前会话立即生效。
 
-> 已安装后可直接 `shr update` 自更新到最新版（等价于重新执行上述脚本，但原地替换当前二进制，无需 sudo 时无需提权）。
+> 已安装后可直接 `shr update` 自更新到最新版（原地替换当前二进制）。
 
 ### 方式二：go install（需 Go 环境）
 
@@ -58,15 +62,17 @@ cp dist/shr /usr/local/bin   # 或任意 PATH 中的目录
 ## 接入 shell
 
 ```bash
-# zsh
-shr init zsh --install          # 自动写入 ~/.zshrc（幂等，可重复执行）
+# 交互式向导（推荐）：自动探测 shell 与安装目录，勾选后一键写入 rc
+shr setup
 
-# bash
-shr init bash --install         # 自动写入 ~/.bashrc
+# 非交互（脚本/CI）：按探测结果直接应用
+shr setup --yes
+
+# 卸载集成行
+shr setup --uninstall
 ```
 
-> 也可手动：`echo 'eval "$(shr init zsh)"' >> ~/.zshrc`。
-> 卸载集成行：`shr init zsh --uninstall`。`--rc <path>` 可指定其他 rc 文件。
+> 也可手动：`echo 'eval "$(shr init zsh)"' >> ~/.zshrc`（`shr init` 仅打印集成代码，供 eval 使用）。
 
 > 注意：已有同名 alias 优先于函数，若规则不生效请先 `unalias`。
 
@@ -146,6 +152,8 @@ colink() {
 | 命令 | 说明 |
 |---|---|
 | `shr init [zsh\|bash]` | 输出 shell 集成代码（默认按 `$SHELL` 探测） |
+| `shr setup` | 交互式配置向导（TUI，自动探测 shell 与 PATH） |
+| `shr setup --yes` | 非交互应用（脚本/CI）；`--uninstall` 移除 |
 | `shr add <cmd> <path...> <expansion>` | 注册规则，最后一个参数是展开值 |
 | `shr remove <cmd> <path...>` | 删除规则或整个命名空间 |
 | `shr list` | 树形列出全部规则 |
