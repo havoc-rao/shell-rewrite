@@ -30,6 +30,8 @@ curl -fsSL https://raw.githubusercontent.com/havoc-rao/shell-rewrite/main/script
 
 自动检测平台、下载 GitHub Releases 中最新的预编译二进制，安装到 `/usr/local/bin`（无写权限时落到 `~/.local/bin`）。覆盖执行即更新。
 
+> 已安装后可直接 `shr update` 自更新到最新版（等价于重新执行上述脚本，但原地替换当前二进制，无需 sudo 时无需提权）。
+
 ### 方式二：go install（需 Go 环境）
 
 ```bash
@@ -147,6 +149,7 @@ colink() {
 | `shr expand <argv...>` | 显示命令行的展开结果 |
 | `shr doctor` | 校验规则冲突 |
 | `shr path` | 打印配置文件路径 |
+| `shr update [version] [--check]` | 从 GitHub Releases 自更新到最新（或指定）版本 |
 
 ## 路线图
 

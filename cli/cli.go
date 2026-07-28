@@ -29,6 +29,7 @@ Usage:
   shr expand <argv...>                  show what a command expands to
   shr doctor                            check rules for conflicts
   shr path                              print rules file path
+  shr update [version] [--check]        self-update from GitHub Releases
   shr version                           print version
 
 Examples:
@@ -66,6 +67,8 @@ func Run(args []string) int {
 	case "path":
 		fmt.Println(core.Path())
 		return 0
+	case "update":
+		return cmdUpdate(args[2:])
 	case "version", "-version", "--version", "-v":
 		fmt.Printf("shr %s (commit %s, built %s)\n", Version, Commit, Date)
 		return 0
@@ -87,6 +90,19 @@ func loadOrDie() *core.Config {
 	return cfg
 }
 
+const initTTYHintTpl = `shr: 'init' prints shell code that must be evaluated into your shell.
+
+You ran it directly — the code was NOT loaded. Enable shr with one of:
+
+  eval "$(shr init %[1]s)"                     # load for the current shell only
+  echo 'eval "$(shr init %[1]s)"' >> ~/%[2]s   # install permanently (then: source ~/%[2]s)
+
+To just inspect the generated code without loading, pipe it:
+
+  shr init %[1]s | less
+  shr init %[1]s > /tmp/shr-init.sh
+`
+
 func cmdInit(args []string) int {
 	shell := ""
 	if len(args) > 0 {
@@ -101,8 +117,36 @@ func cmdInit(args []string) int {
 		fmt.Fprintln(os.Stderr, "shr:", err)
 		return 1
 	}
+	// 直接在交互式终端运行 `shr init bash` 只是把代码打印到屏幕，不会加载进
+	// 当前 shell（用户常误以为已生效）。检测到 stdout 是终端时改为给出 eval
+	// 引导；真正要查看代码请用管道（如 | less），管道场景下 stdout 非终端，
+	// 仍原样输出代码供 eval / 重定向使用。
+	if isTerminal(os.Stdout) {
+		fmt.Fprintf(os.Stderr, initTTYHintTpl, shell, rcFile(shell))
+		return 1
+	}
 	fmt.Print(code)
 	return 0
+}
+
+// rcFile 返回 shell 对应的 rc 文件名（用于 init 引导提示）。
+func rcFile(shell string) string {
+	switch shell {
+	case "zsh":
+		return ".zshrc"
+	default:
+		return ".bashrc"
+	}
+}
+
+// isTerminal 通过 os.File 的模式判断是否为字符设备（交互式终端），
+// 仅用标准库、零依赖；管道/重定向时返回 false。
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }
 
 func cmdAdd(args []string) int {
