@@ -59,11 +59,14 @@ cp dist/shr /usr/local/bin   # 或任意 PATH 中的目录
 
 ```bash
 # zsh
-echo 'eval "$(shr init zsh)"' >> ~/.zshrc
+shr init zsh --install          # 自动写入 ~/.zshrc（幂等，可重复执行）
 
 # bash
-echo 'eval "$(shr init bash)"' >> ~/.bashrc
+shr init bash --install         # 自动写入 ~/.bashrc
 ```
+
+> 也可手动：`echo 'eval "$(shr init zsh)"' >> ~/.zshrc`。
+> 卸载集成行：`shr init zsh --uninstall`。`--rc <path>` 可指定其他 rc 文件。
 
 > 注意：已有同名 alias 优先于函数，若规则不生效请先 `unalias`。
 
