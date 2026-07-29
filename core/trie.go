@@ -8,16 +8,18 @@ import (
 	"strings"
 )
 
-// Node 是规则树的一层：Rules 为叶子缩写映射（缩写 → 展开值），Children 为子命名空间。
+// Node 是规则树的一层：Rules 为叶子缩写映射（缩写 → 一个或多个展开值），
+// Children 为子命名空间。一个缩写可注册多个展开值，运行时命中多值时由
+// wrapper 回调 `shr _pick` 弹出 TUI 让用户选择（见 shellgen）。
 type Node struct {
-	Rules    map[string]string
+	Rules    map[string][]string
 	Children map[string]*Node
 }
 
 // NewNode 创建空节点。
 func NewNode() *Node {
 	return &Node{
-		Rules:    map[string]string{},
+		Rules:    map[string][]string{},
 		Children: map[string]*Node{},
 	}
 }
@@ -27,16 +29,22 @@ func (n *Node) empty() bool {
 }
 
 // Config 持有全部根命令（argv[0]）的规则树。
+//
 // Enabled 控制是否实际复写：为 false 时生成的 wrapper 退化为透传
 // （command <cmd> "$@"），规则本身保留，可随时 shr on 恢复。
+//
+// AllowDuplicates 控制是否允许同一缩写注册多个展开值：为 true（默认）时
+// `add` 追加候选、运行时命中多值弹 TUI 选择；为 false 时 `add` 命中已存在
+// 即报错，避免静默覆盖。
 type Config struct {
-	Roots   map[string]*Node
-	Enabled bool
+	Roots           map[string]*Node
+	Enabled         bool
+	AllowDuplicates bool
 }
 
-// NewConfig 创建空配置（默认开启复写）。
+// NewConfig 创建空配置（默认开启复写、允许重复）。
 func NewConfig() *Config {
-	return &Config{Roots: map[string]*Node{}, Enabled: true}
+	return &Config{Roots: map[string]*Node{}, Enabled: true, AllowDuplicates: true}
 }
 
 var (
@@ -44,6 +52,15 @@ var (
 	nameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 	// 根命令名：同时是 shell 函数名
 	cmdRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
+)
+
+// AddStatus 描述一次 Add 操作对规则树的影响。
+type AddStatus int
+
+const (
+	StatusAdded    AddStatus = iota // 新建了缩写键
+	StatusAppended                  // 缩写键已存在，追加了新候选
+	StatusExists                    // 该候选已存在，幂等无变化
 )
 
 // Add 注册一条缩写规则。
@@ -54,16 +71,18 @@ var (
 //
 // 例：Add("colink", []string{"data", "u"}, "upload")  ⇒  colink data u ⇒ colink data upload
 //
-// 返回 overwritten 表示覆盖了同名规则。
-func (c *Config) Add(cmd string, path []string, expansion string) (overwritten bool, err error) {
+// 当 AllowDuplicates 为 true 时，对已存在的缩写键追加新候选（去重）；
+// 为 false 时，命中已存在键即返回错误，不再静默覆盖。
+// 前缀规则（末位以 + 结尾）的每个候选都必须满足首词以 base 开头且更长。
+func (c *Config) Add(cmd string, path []string, expansion string) (AddStatus, error) {
 	if cmd == metaKey {
-		return false, fmt.Errorf("%q 是保留命令名", cmd)
+		return StatusExists, fmt.Errorf("%q 是保留命令名", cmd)
 	}
 	if !cmdRe.MatchString(cmd) {
-		return false, fmt.Errorf("非法命令名 %q（需可作为 shell 函数名）", cmd)
+		return StatusExists, fmt.Errorf("非法命令名 %q（需可作为 shell 函数名）", cmd)
 	}
 	if len(path) == 0 {
-		return false, fmt.Errorf("缺少缩写路径")
+		return StatusExists, fmt.Errorf("缺少缩写路径")
 	}
 	for i, p := range path {
 		name := p
@@ -71,12 +90,12 @@ func (c *Config) Add(cmd string, path []string, expansion string) (overwritten b
 			name = strings.TrimSuffix(p, "+") // 末位允许 + 后缀表示前缀模式
 		}
 		if !nameRe.MatchString(name) {
-			return false, fmt.Errorf("非法路径片段 %q（仅允许字母、数字和 . _ -）", p)
+			return StatusExists, fmt.Errorf("非法路径片段 %q（仅允许字母、数字和 . _ -）", p)
 		}
 	}
 	expansion = strings.Join(strings.Fields(expansion), " ")
 	if expansion == "" {
-		return false, fmt.Errorf("展开值不能为空")
+		return StatusExists, fmt.Errorf("展开值不能为空")
 	}
 
 	root := c.Roots[cmd]
@@ -88,8 +107,8 @@ func (c *Config) Add(cmd string, path []string, expansion string) (overwritten b
 	// 中间片段：逐层下钻命名空间，必要时创建
 	node := root
 	for _, p := range path[:len(path)-1] {
-		if exp, ok := node.Rules[p]; ok {
-			return false, fmt.Errorf("路径片段 %q 已被用作缩写（→ %q），与命名空间冲突", p, exp)
+		if exps, ok := node.Rules[p]; ok {
+			return StatusExists, fmt.Errorf("路径片段 %q 已被用作缩写（→ %q），与命名空间冲突", p, strings.Join(exps, " | "))
 		}
 		child := node.Children[p]
 		if child == nil {
@@ -100,21 +119,34 @@ func (c *Config) Add(cmd string, path []string, expansion string) (overwritten b
 	}
 
 	last := path[len(path)-1]
-	base := last
 	if strings.HasSuffix(last, "+") {
 		// 前缀模式："b+" = "branch" 表示 b、br、bra、bran、branc 均展开为 branch
-		base = strings.TrimSuffix(last, "+")
+		base := strings.TrimSuffix(last, "+")
 		word := strings.Fields(expansion)[0]
 		if base == "" || len(word) <= len(base) || !strings.HasPrefix(word, base) {
-			return false, fmt.Errorf("前缀规则 %q 要求展开值首词 %q 以 %q 开头且更长", last, word, base)
+			return StatusExists, fmt.Errorf("前缀规则 %q 要求展开值首词 %q 以 %q 开头且更长", last, word, base)
 		}
 	}
+	base := strings.TrimSuffix(last, "+")
 	if _, ok := node.Children[base]; ok {
-		return false, fmt.Errorf("%q 已是命名空间，不能再定义为缩写（可先 shr remove 删除其下规则）", base)
+		return StatusExists, fmt.Errorf("%q 已是命名空间，不能再定义为缩写（可先 shr remove 删除其下规则）", base)
 	}
-	_, overwritten = node.Rules[last]
-	node.Rules[last] = expansion
-	return overwritten, nil
+
+	existing := node.Rules[last]
+	if len(existing) == 0 {
+		node.Rules[last] = []string{expansion}
+		return StatusAdded, nil
+	}
+	if !c.AllowDuplicates {
+		return StatusExists, fmt.Errorf("%q 已存在（→ %s）；当前为「不允许重复」模式，如需覆盖请先 shr remove，或开启: shr dup on", last, strings.Join(existing, " | "))
+	}
+	for _, e := range existing {
+		if e == expansion {
+			return StatusExists, nil // 该候选已存在，幂等无变化
+		}
+	}
+	node.Rules[last] = append(existing, expansion)
+	return StatusAppended, nil
 }
 
 // Prefixes 返回 word 从 len(base) 开始的逐字符前缀（不含 word 本身）。
@@ -185,23 +217,37 @@ func (c *Config) Doctor() []string {
 func checkNode(n *Node, prefix []string) []string {
 	var out []string
 	at := strings.Join(prefix, " ")
-	for abbr, exp := range n.Rules {
+	for abbr, exps := range n.Rules {
 		isPrefix := strings.HasSuffix(abbr, "+")
 		base := strings.TrimSuffix(abbr, "+")
 		if !nameRe.MatchString(base) {
 			out = append(out, fmt.Sprintf("%s: 缩写 %q 含非法字符", at, abbr))
 		}
 		if _, ok := n.Children[base]; ok {
-			out = append(out, fmt.Sprintf("%s: %q 既是缩写（→ %q）又是命名空间，行为有歧义", at, abbr, exp))
+			out = append(out, fmt.Sprintf("%s: %q 既是缩写（→ %q）又是命名空间，行为有歧义", at, abbr, strings.Join(exps, " | ")))
 		}
-		toks := strings.Fields(exp)
-		if isPrefix {
-			if len(toks[0]) <= len(base) || !strings.HasPrefix(toks[0], base) {
-				out = append(out, fmt.Sprintf("%s: 前缀规则 %q 的目标 %q 不以 %q 开头或不够长", at, abbr, exp, base))
+		for _, exp := range exps {
+			toks := strings.Fields(exp)
+			if isPrefix {
+				if len(toks) == 0 || len(toks[0]) <= len(base) || !strings.HasPrefix(toks[0], base) {
+					out = append(out, fmt.Sprintf("%s: 前缀规则 %q 的目标 %q 不以 %q 开头或不够长", at, abbr, exp, base))
+				}
+			} else if len(toks) > 1 {
+				if _, ok := n.Children[toks[0]]; ok {
+					out = append(out, fmt.Sprintf("%s: 缩写 %q 的展开值 %q 带参数，其首词 %q 又有子命名空间，下钻不会发生", at, abbr, exp, toks[0]))
+				}
 			}
-		} else if len(toks) > 1 {
-			if _, ok := n.Children[toks[0]]; ok {
-				out = append(out, fmt.Sprintf("%s: 缩写 %q 的展开值 %q 带参数，其首词 %q 又有子命名空间，下钻不会发生", at, abbr, exp, toks[0]))
+		}
+		if len(exps) > 1 {
+			// 多值缩写作为终点：选完直接执行，不下钻。若某候选首词恰有子表，提示用户。
+			for _, exp := range exps {
+				toks := strings.Fields(exp)
+				if len(toks) == 1 {
+					if _, ok := n.Children[toks[0]]; ok {
+						out = append(out, fmt.Sprintf("%s: 多值缩写 %q 的候选 %q 是命名空间，但多值分支不下钻（选完即执行）", at, abbr, exp))
+						break
+					}
+				}
 			}
 		}
 	}

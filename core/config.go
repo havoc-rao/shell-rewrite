@@ -10,7 +10,8 @@ import (
 )
 
 // metaKey 是 rules.toml 中保留的元信息表名，不作为命令根解析。
-// 其中 enabled 字段控制复写开关（shr on / shr off）。
+// 其中 enabled 控制复写开关（shr on / shr off），
+// allow_duplicates 控制是否允许同一缩写注册多个展开值（shr dup on / off）。
 const metaKey = "__shr"
 
 // Path 返回规则文件路径：$XDG_CONFIG_HOME/shr/rules.toml 或 ~/.config/shr/rules.toml。
@@ -30,13 +31,15 @@ func Load() (*Config, error) {
 
 // LoadFrom 从指定路径加载配置。
 //
-// TOML 结构即嵌套规则树，同一层中字符串值是叶子规则、子表是命名空间：
+// TOML 结构即嵌套规则树，同一层中字符串值是叶子规则、子表是命名空间；
+// 一个缩写可有多个展开值，用数组表示（单值仍可写成字符串，向后兼容）：
 //
 //	[colink]
 //	d  = "data"        # 缩写 → 命名空间名（下钻）
 //	st = "status"      # 普通叶子
 //	[colink.data]
 //	u = "upload"
+//	p = ["pull", "push"]   # 多值：运行时弹 TUI 选择
 func LoadFrom(p string) (*Config, error) {
 	cfg := NewConfig()
 	data, err := os.ReadFile(p)
@@ -55,6 +58,9 @@ func LoadFrom(p string) (*Config, error) {
 			if m, ok := v.(map[string]interface{}); ok {
 				if e, ok := m["enabled"].(bool); ok {
 					cfg.Enabled = e
+				}
+				if d, ok := m["allow_duplicates"].(bool); ok {
+					cfg.AllowDuplicates = d
 				}
 			}
 			continue
@@ -77,7 +83,19 @@ func nodeFromMap(m map[string]interface{}) (*Node, error) {
 	for k, v := range m {
 		switch t := v.(type) {
 		case string:
-			n.Rules[k] = t
+			n.Rules[k] = []string{t}
+		case []interface{}:
+			var arr []string
+			for _, e := range t {
+				s, ok := e.(string)
+				if !ok {
+					return nil, fmt.Errorf("%q 的数组元素必须是字符串", k)
+				}
+				arr = append(arr, s)
+			}
+			if len(arr) > 0 {
+				n.Rules[k] = arr
+			}
 		case map[string]interface{}:
 			child, err := nodeFromMap(t)
 			if err != nil {
@@ -85,7 +103,7 @@ func nodeFromMap(m map[string]interface{}) (*Node, error) {
 			}
 			n.Children[k] = child
 		default:
-			return nil, fmt.Errorf("%q 的值类型不支持（应为字符串或表）", k)
+			return nil, fmt.Errorf("%q 的值类型不支持（应为字符串、数组或表）", k)
 		}
 	}
 	return n, nil
@@ -111,7 +129,10 @@ func (c *Config) SaveTo(p string) error {
 
 func (c *Config) toMap() map[string]interface{} {
 	out := map[string]interface{}{
-		metaKey: map[string]interface{}{"enabled": c.Enabled},
+		metaKey: map[string]interface{}{
+			"enabled":          c.Enabled,
+			"allow_duplicates": c.AllowDuplicates,
+		},
 	}
 	for cmd, n := range c.Roots {
 		out[cmd] = nodeToMap(n)
@@ -122,7 +143,11 @@ func (c *Config) toMap() map[string]interface{} {
 func nodeToMap(n *Node) map[string]interface{} {
 	m := map[string]interface{}{}
 	for k, v := range n.Rules {
-		m[k] = v
+		if len(v) == 1 {
+			m[k] = v[0] // 单值写字符串，与手编/老配置一致
+		} else {
+			m[k] = v // 多值写数组
+		}
 	}
 	for k, child := range n.Children {
 		m[k] = nodeToMap(child)

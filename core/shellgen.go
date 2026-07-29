@@ -29,6 +29,21 @@ func (c *Config) GenInit(shell string) (string, error) {
 	}
 }
 
+// posixPickFunc 是多值缩写的选择器 helper。它随 _gen posix 一起输出，确保
+// 热加载（只 eval _gen posix，不含 prelude）也能定义它——否则老会话升级后
+// 多值分支会引用未定义的 _shr_pick（command not found）。
+const posixPickFunc = `# 多值缩写命中时弹出 TUI 选择器：shr _pick 把 TUI 渲染到 /dev/tty，
+# 选中值写到 stdout 供本函数捕获；取消时返回非零，wrapper 据 return 中止执行。
+# SHR_PICK=off 直接取首个候选（脚本确定性执行，不弹 TUI）。
+_shr_pick() {
+  if [ "${SHR_PICK:-on}" = "off" ]; then
+    shift; printf '%s\n' "$1"; return 0
+  fi
+  shr _pick "$@"
+}
+
+`
+
 const posixPrelude = `_SHR_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/shr/rules.toml"
 
 _shr_mtime() {
@@ -73,6 +88,9 @@ esac
 // shr on 后热加载无缝恢复。
 func (c *Config) GenPosixFuncs() string {
 	var b strings.Builder
+	// _shr_pick 随热加载一起重新定义：老会话的 prelude 可能是旧版（无此函数），
+	// 仅靠 init 注入会让多值分支引用未定义函数；放在此处保证 _gen posix 自洽。
+	b.WriteString(posixPickFunc)
 	for _, cmd := range c.SortedRoots() {
 		if c.Enabled {
 			b.WriteString(genFunc(cmd, c.Roots[cmd]))
@@ -99,10 +117,11 @@ func genFunc(cmd string, node *Node) string {
 
 // genCase 把一层规则树机械翻译成嵌套 case：
 //
-//	缩写 → 无子表：  abbr) shift; command <prefix> <expansion> "$@" ;;
-//	缩写 → 子表名：  abbr|name) shift; <递归 case> ;;
-//	纯命名空间：     name) shift; <递归 case> ;;
-//	失配：           *) command <prefix> "$@" ;;   （整体透传）
+//	缩写 → 单值无子表：abbr) shift; command <prefix> <expansion> "$@" ;;
+//	缩写 → 单值子表名：abbr|name) shift; <递归 case> ;;   （下钻）
+//	缩写 → 多值：      abbr) shift; _shr_pick 弹选后 command <prefix> <picked> "$@" ;;
+//	纯命名空间：        name) shift; <递归 case> ;;
+//	失配：              *) command <prefix> "$@" ;;   （整体透传）
 func genCase(b *strings.Builder, node *Node, prefix []string, ind int) {
 	pad := strings.Repeat("  ", ind)
 	b.WriteString(pad + `case "$1" in` + "\n")
@@ -110,10 +129,15 @@ func genCase(b *strings.Builder, node *Node, prefix []string, ind int) {
 	merged := map[string]bool{} // 已被缩写分支覆盖的子表名
 
 	for _, abbr := range sortedKeys(node.Rules) {
-		toks := strings.Fields(node.Rules[abbr])
-		word := toks[0]
+		values := node.Rules[abbr]
+		if len(values) == 0 {
+			continue
+		}
+		multi := len(values) > 1
+		toks0 := strings.Fields(values[0])
+		word := toks0[0]
 		child, drill := node.Children[word]
-		drill = drill && len(toks) == 1
+		drill = drill && !multi && len(toks0) == 1
 
 		// 计算 case pattern 列表
 		var pats []string
@@ -142,12 +166,20 @@ func genCase(b *strings.Builder, node *Node, prefix []string, ind int) {
 
 		fmt.Fprintf(b, "%s  %s)\n", pad, strings.Join(pats, "|"))
 		b.WriteString(pad + "    shift\n")
-		if drill {
+		switch {
+		case drill:
 			genCase(b, child, appendToks(prefix, word), ind+2)
 			merged[word] = true
-		} else {
-			fmt.Fprintf(b, "%s    _shr_echo %s \"$@\"\n", pad, quoteAll(appendToks(prefix, toks...)))
-			fmt.Fprintf(b, "%s    command %s \"$@\"\n", pad, quoteAll(appendToks(prefix, toks...)))
+		case multi:
+			// 多值：运行时回调 _shr_pick 弹 TUI 选择，选中值按空格分词后执行
+			label := strings.Join(append(append([]string{}, prefix...), trimPrefixMark(abbr)), " ")
+			fmt.Fprintf(b, "%s    local _shr_picked\n", pad)
+			fmt.Fprintf(b, "%s    _shr_picked=$(_shr_pick %s %s) || return $?\n", pad, quote(label), quoteAll(values))
+			fmt.Fprintf(b, "%s    _shr_echo %s \"$_shr_picked\" \"$@\"\n", pad, quoteAll(prefix))
+			fmt.Fprintf(b, "%s    command %s $_shr_picked \"$@\"\n", pad, quoteAll(prefix))
+		default:
+			fmt.Fprintf(b, "%s    _shr_echo %s \"$@\"\n", pad, quoteAll(appendToks(prefix, toks0...)))
+			fmt.Fprintf(b, "%s    command %s \"$@\"\n", pad, quoteAll(appendToks(prefix, toks0...)))
 		}
 		b.WriteString(pad + "    ;;\n")
 	}
@@ -172,12 +204,15 @@ func genCase(b *strings.Builder, node *Node, prefix []string, ind int) {
 // shadowedByLongerPrefix 判断前缀 p 是否会被另一条 base 更长的前缀规则捕获
 //（与 matchPrefix 的"最长 base 优先"语义保持一致，避免 case 顺序匹配产生歧义）。
 func shadowedByLongerPrefix(node *Node, self, base, p string) bool {
-	for key, target := range node.Rules {
+	for key, targets := range node.Rules {
 		if key == self || !strings.HasSuffix(key, "+") {
 			continue
 		}
+		if len(targets) == 0 {
+			continue
+		}
 		base2 := strings.TrimSuffix(key, "+")
-		word2 := strings.Fields(target)[0]
+		word2 := strings.Fields(targets[0])[0]
 		if len(base2) > len(base) && len(p) >= len(base2) &&
 			len(p) < len(word2) && strings.HasPrefix(word2, p) {
 			return true
@@ -216,9 +251,17 @@ func quoteAll(toks []string) string {
 		if i > 0 {
 			sb.WriteByte(' ')
 		}
-		sb.WriteByte('"')
-		sb.WriteString(shellEscaper.Replace(t))
-		sb.WriteByte('"')
+		sb.WriteString(quote(t))
 	}
 	return sb.String()
+}
+
+// quote 把单个 token 双引号包裹并转义。
+func quote(s string) string {
+	return `"` + shellEscaper.Replace(s) + `"`
+}
+
+// trimPrefixMark 去掉前缀规则的 + 后缀，用于生成 TUI 选择器的可读标签。
+func trimPrefixMark(abbr string) string {
+	return strings.TrimSuffix(abbr, "+")
 }

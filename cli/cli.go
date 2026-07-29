@@ -34,6 +34,7 @@ Usage:
   shr on                                enable rewriting (default)
   shr off                               disable rewriting (passthrough)
   shr status                            show whether rewriting is enabled
+  shr dup on|off                        allow/disallow multi-value abbrevs (default on)
   shr update [version] [--check]        self-update from GitHub Releases
   shr version                           print version
 
@@ -43,6 +44,8 @@ Examples:
   shr add colink data u upload          # colink data u → colink data upload
   shr add colink d data                 # colink d u    → colink data upload (drill-through)
   shr add git b+ branch                 # git b / br / bra / bran / branc → git branch (prefix)
+  shr add git p pull                    # git p → git pull
+  shr add git p push                    # git p → git pull | push (runtime TUI pick when dup on)
 
 Setup:  shr setup   # interactive wizard (recommended), or: echo 'eval "$(shr init zsh)"' >> ~/.zshrc
 `
@@ -70,6 +73,8 @@ func Run(args []string) int {
 		return cmdDoctor()
 	case "_gen":
 		return cmdGen(args[2:])
+	case "_pick":
+		return cmdPick(args[2:])
 	case "path":
 		fmt.Println(core.Path())
 		return 0
@@ -79,6 +84,8 @@ func Run(args []string) int {
 		return cmdToggle(false)
 	case "status":
 		return cmdStatus()
+	case "dup":
+		return cmdDup(args[2:])
 	case "update":
 		return cmdUpdate(args[2:])
 	case "version", "-version", "--version", "-v":
@@ -178,10 +185,16 @@ func cmdAdd(args []string) int {
 	expansion := args[len(args)-1]
 
 	cfg := loadOrDie()
-	overwritten, err := cfg.Add(cmd, path, expansion)
+	status, err := cfg.Add(cmd, path, expansion)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "shr:", err)
 		return 1
+	}
+	// 幂等：候选已存在则不写盘
+	if status == core.StatusExists {
+		lhs := strings.Join(append([]string{cmd}, path...), " ")
+		fmt.Printf("exists:  %s → %s\n", lhs, expansion)
+		return 0
 	}
 	if err := cfg.Save(); err != nil {
 		fmt.Fprintln(os.Stderr, "shr:", err)
@@ -192,8 +205,8 @@ func cmdAdd(args []string) int {
 	rhsParts := append([]string{cmd}, path[:len(path)-1]...)
 	rhsParts = append(rhsParts, strings.Fields(expansion)...)
 	verb := "added:  "
-	if overwritten {
-		verb = "updated:"
+	if status == core.StatusAppended {
+		verb = "appended:"
 	}
 	fmt.Printf("%s %s → %s\n", verb, lhs, strings.Join(rhsParts, " "))
 	return 0
@@ -242,13 +255,14 @@ func printNode(n *core.Node, pad string) {
 	}
 	for _, k := range sortedKeys(n.Rules) {
 		v := n.Rules[k]
+		disp := strings.Join(v, " | ")
 		if strings.HasSuffix(k, "+") {
-			word := strings.Fields(v)[0]
-			fmt.Printf("%s%-*s → %s  (%s)\n", pad, width, k, v,
+			word := strings.Fields(v[0])[0]
+			fmt.Printf("%s%-*s → %s  (%s)\n", pad, width, k, disp,
 				strings.Join(core.Prefixes(strings.TrimSuffix(k, "+"), word), ", "))
 			continue
 		}
-		fmt.Printf("%s%-*s → %s\n", pad, width, k, v)
+		fmt.Printf("%s%-*s → %s\n", pad, width, k, disp)
 	}
 	for _, name := range sortedKeys(n.Children) {
 		fmt.Printf("%s%s/\n", pad, name)
@@ -263,6 +277,9 @@ func cmdExpand(args []string) int {
 	}
 	cfg := loadOrDie()
 	fmt.Println(strings.Join(cfg.Expand(args), " "))
+	for _, a := range cfg.Ambiguities(args) {
+		fmt.Fprintf(os.Stderr, "shr: %s 有多个候选: %s（运行时将弹出选择）\n", a.At, strings.Join(a.Values, " | "))
+	}
 	return 0
 }
 
@@ -320,6 +337,42 @@ func cmdStatus() int {
 		fmt.Println("enabled")
 	} else {
 		fmt.Println("disabled")
+	}
+	return 0
+}
+
+// cmdDup 控制「允许重复」开关：
+//   - on（默认）：add 对已存在缩写追加候选（去重），运行时命中多值弹 TUI 选择；
+//   - off：add 命中已存在即报错，避免静默覆盖。
+//
+// 不带参数则打印当前状态（on/off）。与 on/off（复写总开关）正交，互不影响。
+func cmdDup(args []string) int {
+	cfg := loadOrDie()
+	if len(args) == 0 {
+		if cfg.AllowDuplicates {
+			fmt.Println("on")
+		} else {
+			fmt.Println("off")
+		}
+		return 0
+	}
+	switch args[0] {
+	case "on", "enable", "true", "yes":
+		cfg.AllowDuplicates = true
+	case "off", "disable", "false", "no":
+		cfg.AllowDuplicates = false
+	default:
+		fmt.Fprintf(os.Stderr, "shr dup: unknown value %q (use: on|off)\n", args[0])
+		return 2
+	}
+	if err := cfg.Save(); err != nil {
+		fmt.Fprintln(os.Stderr, "shr:", err)
+		return 1
+	}
+	if cfg.AllowDuplicates {
+		fmt.Println("shr: duplicates allowed — multi-value abbrevs prompt at runtime")
+	} else {
+		fmt.Println("shr: duplicates disallowed — add rejects existing abbrev")
 	}
 	return 0
 }
