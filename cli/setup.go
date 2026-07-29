@@ -296,8 +296,8 @@ func (m *setupModel) apply() {
 // ---- 视图 ----
 
 var (
-	setupTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
-	setupCurStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
+	setupTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("120"))
+	setupCurStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("120"))
 	setupDimStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	setupOkStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("36")).Bold(true)
 )

@@ -132,7 +132,7 @@ func (m pickModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // 复用 setup.go 声明的样式（同属 cli 包），与 shr setup 的向导视觉风格保持
-// 一致：无边框、无反色背景块，纯前景色——标题粉色粗体，光标行整行变粉，
+// 一致：无边框、无反色背景块，纯前景色——标题绿色粗体，光标行整行变绿，
 // 帮助/说明文字暗灰。不再用 pick 专属的一套（圆角框/背景高亮/分隔线）。
 func (m pickModel) View() string {
 	numWidth := len(fmt.Sprintf("%d.", len(m.cands)))
