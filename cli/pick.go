@@ -58,7 +58,18 @@ func cmdPick(args []string) int {
 	// 位即可，无需再探测。
 	lipgloss.SetColorProfile(termenv.TrueColor)
 
-	m := newPickModel(label, cands)
+	// 选择记忆：光标默认停在上次选中的候选上（按值匹配，候选已变动则回退首个）。
+	cursor := 0
+	if last := pickLast(loadPicks(), label); last != "" {
+		for i, c := range cands {
+			if c == last {
+				cursor = i
+				break
+			}
+		}
+	}
+
+	m := newPickModel(label, cands, cursor)
 	p := tea.NewProgram(m, tea.WithInput(tty), tea.WithOutput(tty))
 	final, err := p.Run()
 	if err != nil {
@@ -69,7 +80,9 @@ func cmdPick(args []string) int {
 	if !ok || res.cancelled {
 		return 130 // 类似 SIGINT 退出码，wrapper 会 return 中止
 	}
-	fmt.Println(res.cands[res.cursor])
+	chosen := res.cands[res.cursor]
+	savePick(label, chosen) // 记住本次选择，下次默认停在此处
+	fmt.Println(chosen)
 	return 0
 }
 
@@ -80,8 +93,11 @@ type pickModel struct {
 	cancelled bool
 }
 
-func newPickModel(label string, cands []string) pickModel {
-	return pickModel{label: label, cands: cands}
+func newPickModel(label string, cands []string, cursor int) pickModel {
+	if cursor < 0 || cursor >= len(cands) {
+		cursor = 0
+	}
+	return pickModel{label: label, cands: cands, cursor: cursor}
 }
 
 func (m pickModel) Init() tea.Cmd { return nil }
