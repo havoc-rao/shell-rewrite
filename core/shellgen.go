@@ -85,7 +85,8 @@ esac
 
 // GenPosixFuncs 生成全部 wrapper 函数（bash/zsh 通用），热加载时重新 eval 即可生效。
 // Enabled 为 false 时退化为透传函数（command <cmd> "$@"），保留函数定义以便
-// shr on 后热加载无缝恢复。
+// shr on 后热加载无缝恢复。一级命令名别名始终保留命令名替换（否则缩写名
+// 会变成找不到的命令），仅在 Enabled 时下钻目标规则树。
 func (c *Config) GenPosixFuncs() string {
 	var b strings.Builder
 	// _shr_pick 随热加载一起重新定义：老会话的 prelude 可能是旧版（无此函数），
@@ -96,6 +97,43 @@ func (c *Config) GenPosixFuncs() string {
 			b.WriteString(genFunc(cmd, c.Roots[cmd]))
 		} else {
 			b.WriteString(genPassthrough(cmd))
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString(c.genAliasFuncs())
+	return b.String()
+}
+
+// genAliasFuncs 生成一级命令名缩写的 wrapper 函数。
+//
+//	目标有规则树（root）+ Enabled → 函数调用下钻（target "$@"），
+//	  由目标规则树负责回显与子命令展开；
+//	目标无规则树 + Enabled        → command 直接执行，命中时回显展开后的命令；
+//	Enabled 为 false（shr off）   → command <target> "$@"，保留命令名替换、关闭下钻。
+//
+// 前缀模式（"c+"）为每个未被更具体规则覆盖的前缀各生成一个同名函数。
+func (c *Config) genAliasFuncs() string {
+	var b strings.Builder
+	for _, abbr := range c.SortedAliases() {
+		targets := c.Aliases[abbr]
+		if len(targets) == 0 {
+			continue
+		}
+		toks := strings.Fields(targets[0])
+		word := toks[0]
+		_, hasRoot := c.Roots[word]
+		drill := c.Enabled && hasRoot && len(toks) == 1
+		var body string
+		switch {
+		case drill:
+			body = fmt.Sprintf("  %s \"$@\"\n", word)
+		case c.Enabled:
+			body = fmt.Sprintf("  _shr_echo %s \"$@\"\n  command %s \"$@\"\n", quoteAll(toks), quoteAll(toks))
+		default:
+			body = fmt.Sprintf("  command %s \"$@\"\n", quoteAll(toks))
+		}
+		for _, name := range c.aliasFuncNames(abbr) {
+			fmt.Fprintf(&b, "%s() {\n%s}\n", name, body)
 		}
 		b.WriteString("\n")
 	}

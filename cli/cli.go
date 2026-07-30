@@ -25,8 +25,10 @@ const usageText = `shr — shell command shortener: rewrite commands by rules be
 Usage:
   shr init [zsh|bash]                   print shell integration code (for eval "$(shr init zsh)")
   shr setup                             interactive setup wizard (TUI, writes rc)
-  shr add <cmd> <path...> <expansion>   register a rule
-  shr remove <cmd> <path...>            remove a rule or namespace
+  shr add <cmd> <path...> <expansion>   register a rule (3+ args: subcommand abbrev)
+  shr add <abbr> <target>               register a top-level command alias (2 args: argv[0])
+  shr remove <cmd> <path...>            remove a rule or namespace (2+ args)
+  shr remove <abbr>                     remove a top-level alias (1 arg)
   shr list                              show all rules as a tree
   shr expand <argv...>                  show what a command expands to
   shr doctor                            check rules for conflicts
@@ -46,6 +48,9 @@ Examples:
   shr add git b+ branch                 # git b / br / bra / bran / branc → git branch (prefix)
   shr add git p pull                    # git p → git pull
   shr add git p push                    # git p → git pull | push (runtime TUI pick when dup on)
+  shr add c clear                       # c → clear (参数透传, 2-arg alias)
+  shr add g git                         # g → git (继续下钻 git 规则树)
+  shr add c+ clear                      # c / cl / cle / clea → clear (prefix)
 
 Setup:  shr setup   # interactive wizard (recommended), or: echo 'eval "$(shr init zsh)"' >> ~/.zshrc
 `
@@ -176,8 +181,32 @@ func isTerminal(f *os.File) bool {
 }
 
 func cmdAdd(args []string) int {
+	// 两参数：一级命令名缩写（argv[0] → target），无子命令路径
+	if len(args) == 2 {
+		abbr, target := args[0], args[1]
+		cfg := loadOrDie()
+		status, err := cfg.AddAlias(abbr, target)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "shr:", err)
+			return 1
+		}
+		if status == core.StatusExists {
+			fmt.Printf("exists:  %s → %s\n", abbr, target)
+			return 0
+		}
+		if err := cfg.Save(); err != nil {
+			fmt.Fprintln(os.Stderr, "shr:", err)
+			return 1
+		}
+		verb := "added:  "
+		if status == core.StatusAppended {
+			verb = "appended:"
+		}
+		fmt.Printf("%s %s → %s\n", verb, abbr, target)
+		return 0
+	}
 	if len(args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: shr add <cmd> <path...> <expansion>")
+		fmt.Fprintln(os.Stderr, "usage: shr add <cmd> <path...> <expansion>  |  shr add <abbr> <target>")
 		return 2
 	}
 	cmd := args[0]
@@ -213,9 +242,23 @@ func cmdAdd(args []string) int {
 }
 
 func cmdRemove(args []string) int {
-	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: shr remove <cmd> <path...>")
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: shr remove <cmd> <path...>  |  shr remove <abbr>")
 		return 2
+	}
+	// 单参数：删除一级命令名缩写
+	if len(args) == 1 {
+		cfg := loadOrDie()
+		if !cfg.RemoveAlias(args[0]) {
+			fmt.Fprintf(os.Stderr, "shr: alias not found: %s\n", args[0])
+			return 1
+		}
+		if err := cfg.Save(); err != nil {
+			fmt.Fprintln(os.Stderr, "shr:", err)
+			return 1
+		}
+		fmt.Printf("removed: %s\n", args[0])
+		return 0
 	}
 	cfg := loadOrDie()
 	if !cfg.Remove(args[0], args[1:]) {
@@ -235,13 +278,33 @@ func cmdList() int {
 	if !cfg.Enabled {
 		fmt.Println("(rewriting disabled — shr on to enable)")
 	}
-	if len(cfg.Roots) == 0 {
+	if len(cfg.Roots) == 0 && len(cfg.Aliases) == 0 {
 		fmt.Println("no rules yet — try: shr add git co checkout")
 		return 0
 	}
 	for _, cmd := range cfg.SortedRoots() {
 		fmt.Println(cmd)
 		printNode(cfg.Roots[cmd], "  ")
+	}
+	if aliases := cfg.SortedAliases(); len(aliases) > 0 {
+		fmt.Println("(aliases)")
+		width := 0
+		for _, k := range aliases {
+			if len(k) > width {
+				width = len(k)
+			}
+		}
+		for _, k := range aliases {
+			v := cfg.Aliases[k]
+			disp := strings.Join(v, " | ")
+			if strings.HasSuffix(k, "+") {
+				word := strings.Fields(v[0])[0]
+				fmt.Printf("  %-*s → %s  (%s)\n", width, k, disp,
+					strings.Join(core.Prefixes(strings.TrimSuffix(k, "+"), word), ", "))
+				continue
+			}
+			fmt.Printf("  %-*s → %s\n", width, k, disp)
+		}
 	}
 	return 0
 }

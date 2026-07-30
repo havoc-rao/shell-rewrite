@@ -62,6 +62,24 @@ func LoadFrom(p string) (*Config, error) {
 				if d, ok := m["allow_duplicates"].(bool); ok {
 					cfg.AllowDuplicates = d
 				}
+				if a, ok := m["aliases"].(map[string]interface{}); ok {
+					for k, val := range a {
+						switch t := val.(type) {
+						case string:
+							cfg.Aliases[k] = []string{t}
+						case []interface{}:
+							var arr []string
+							for _, e := range t {
+								if s, ok := e.(string); ok {
+									arr = append(arr, s)
+								}
+							}
+							if len(arr) > 0 {
+								cfg.Aliases[k] = arr
+							}
+						}
+					}
+				}
 			}
 			continue
 		}
@@ -128,11 +146,23 @@ func (c *Config) SaveTo(p string) error {
 }
 
 func (c *Config) toMap() map[string]interface{} {
+	meta := map[string]interface{}{
+		"enabled":          c.Enabled,
+		"allow_duplicates": c.AllowDuplicates,
+	}
+	if len(c.Aliases) > 0 {
+		aliases := map[string]interface{}{}
+		for k, v := range c.Aliases {
+			if len(v) == 1 {
+				aliases[k] = v[0] // 单值写字符串，与手编/老配置一致
+			} else {
+				aliases[k] = v
+			}
+		}
+		meta["aliases"] = aliases
+	}
 	out := map[string]interface{}{
-		metaKey: map[string]interface{}{
-			"enabled":          c.Enabled,
-			"allow_duplicates": c.AllowDuplicates,
-		},
+		metaKey: meta,
 	}
 	for cmd, n := range c.Roots {
 		out[cmd] = nodeToMap(n)

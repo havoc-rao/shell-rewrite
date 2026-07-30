@@ -30,21 +30,33 @@ func (n *Node) empty() bool {
 
 // Config 持有全部根命令（argv[0]）的规则树。
 //
+// Aliases 是一级命令名缩写（argv[0] → target），与规则树正交：
+// 目标若恰是某 root 命令，wrapper 以函数调用方式下钻其规则树；
+// 否则 command 直接执行。前缀模式（"c+"）为每个前缀生成同名 wrapper。
+//
 // Enabled 控制是否实际复写：为 false 时生成的 wrapper 退化为透传
 // （command <cmd> "$@"），规则本身保留，可随时 shr on 恢复。
+// 别名在 Enabled=false 时仍保留命令名替换（command <target> "$@"），
+// 仅关闭子命令下钻——否则缩写名（如 g）会变成找不到的命令。
 //
 // AllowDuplicates 控制是否允许同一缩写注册多个展开值：为 true（默认）时
 // `add` 追加候选、运行时命中多值弹 TUI 选择；为 false 时 `add` 命中已存在
 // 即报错，避免静默覆盖。
 type Config struct {
 	Roots           map[string]*Node
+	Aliases         map[string][]string
 	Enabled         bool
 	AllowDuplicates bool
 }
 
 // NewConfig 创建空配置（默认开启复写、允许重复）。
 func NewConfig() *Config {
-	return &Config{Roots: map[string]*Node{}, Enabled: true, AllowDuplicates: true}
+	return &Config{
+		Roots:           map[string]*Node{},
+		Aliases:         map[string][]string{},
+		Enabled:         true,
+		AllowDuplicates: true,
+	}
 }
 
 var (
@@ -205,13 +217,154 @@ func (c *Config) SortedRoots() []string {
 	return names
 }
 
+// SortedAliases 返回排序后的一级命令名缩写键列表。
+func (c *Config) SortedAliases() []string {
+	return sortedKeys(c.Aliases)
+}
+
+// AddAlias 注册一级命令名缩写（argv[0] → target）。
+//
+// 与 Add 不同，AddAlias 改写的是命令名本身而非子命令参数。
+// 前缀模式（abbr 以 + 结尾）为每个前缀生成同名 wrapper。
+// 若 target 恰是某 root 命令，wrapper 以函数调用方式下钻其规则树。
+func (c *Config) AddAlias(abbr, target string) (AddStatus, error) {
+	base := strings.TrimSuffix(abbr, "+")
+	isPrefix := base != abbr
+	if base == metaKey {
+		return StatusExists, fmt.Errorf("%q 是保留命令名", abbr)
+	}
+	if !cmdRe.MatchString(base) {
+		return StatusExists, fmt.Errorf("非法缩写名 %q（需可作为 shell 函数名）", abbr)
+	}
+	target = strings.Join(strings.Fields(target), " ")
+	if target == "" {
+		return StatusExists, fmt.Errorf("展开目标不能为空")
+	}
+	if isPrefix {
+		word := strings.Fields(target)[0]
+		if len(word) <= len(base) || !strings.HasPrefix(word, base) {
+			return StatusExists, fmt.Errorf("前缀规则 %q 要求目标首词 %q 以 %q 开头且更长", abbr, word, base)
+		}
+	}
+	// 不能与 root 命令同名（同名函数定义冲突）
+	if _, ok := c.Roots[base]; ok {
+		return StatusExists, fmt.Errorf("%q 已是受管理命令（有子命令规则），不能再定义为别名", base)
+	}
+	if isPrefix {
+		word := strings.Fields(target)[0]
+		for _, p := range Prefixes(base, word) {
+			if _, ok := c.Roots[p]; ok {
+				return StatusExists, fmt.Errorf("前缀 %q 命中受管理命令 %q，冲突", p, p)
+			}
+		}
+	}
+
+	existing := c.Aliases[abbr]
+	if len(existing) == 0 {
+		c.Aliases[abbr] = []string{target}
+		return StatusAdded, nil
+	}
+	if !c.AllowDuplicates {
+		return StatusExists, fmt.Errorf("别名 %q 已存在（→ %s）；当前为「不允许重复」模式", abbr, strings.Join(existing, " | "))
+	}
+	for _, e := range existing {
+		if e == target {
+			return StatusExists, nil // 该候选已存在，幂等无变化
+		}
+	}
+	c.Aliases[abbr] = append(existing, target)
+	return StatusAppended, nil
+}
+
+// RemoveAlias 删除一个一级命令名缩写，返回是否删除成功。
+func (c *Config) RemoveAlias(abbr string) bool {
+	if _, ok := c.Aliases[abbr]; ok {
+		delete(c.Aliases, abbr)
+		return true
+	}
+	return false
+}
+
+// aliasFuncNames 计算一个别名键对应的 wrapper 函数名列表。
+// 精确别名返回自身；前缀别名（"c+"）返回所有未被更具体规则覆盖的前缀。
+func (c *Config) aliasFuncNames(abbr string) []string {
+	targets := c.Aliases[abbr]
+	if len(targets) == 0 {
+		return nil
+	}
+	word := strings.Fields(targets[0])[0]
+	if !strings.HasSuffix(abbr, "+") {
+		return []string{abbr}
+	}
+	base := strings.TrimSuffix(abbr, "+")
+	var names []string
+	for _, p := range Prefixes(base, word) {
+		if _, exact := c.Aliases[p]; exact {
+			continue
+		}
+		if c.aliasShadowedByLongerPrefix(abbr, base, p) {
+			continue
+		}
+		names = append(names, p)
+	}
+	return names
+}
+
+// aliasShadowedByLongerPrefix 判断前缀 p 是否会被另一条 base 更长的别名前缀
+// 规则捕获（与规则树的前缀语义保持一致，最长 base 优先）。
+func (c *Config) aliasShadowedByLongerPrefix(self, base, p string) bool {
+	for key, targets := range c.Aliases {
+		if key == self || !strings.HasSuffix(key, "+") || len(targets) == 0 {
+			continue
+		}
+		base2 := strings.TrimSuffix(key, "+")
+		word2 := strings.Fields(targets[0])[0]
+		if len(base2) > len(base) && len(p) >= len(base2) &&
+			len(p) < len(word2) && strings.HasPrefix(word2, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // Doctor 校验规则树，返回问题列表（主要防御手工编辑 TOML 造成的冲突）。
 func (c *Config) Doctor() []string {
 	var issues []string
+	issues = append(issues, c.checkAliases()...)
 	for _, cmd := range c.SortedRoots() {
 		issues = append(issues, checkNode(c.Roots[cmd], []string{cmd})...)
 	}
 	return issues
+}
+
+// checkAliases 校验一级命令名缩写，返回问题列表。
+func (c *Config) checkAliases() []string {
+	var out []string
+	for _, abbr := range c.SortedAliases() {
+		base := strings.TrimSuffix(abbr, "+")
+		targets := c.Aliases[abbr]
+		if !cmdRe.MatchString(base) {
+			out = append(out, fmt.Sprintf("别名 %q 缩写名含非法字符", abbr))
+		}
+		if _, ok := c.Roots[base]; ok {
+			out = append(out, fmt.Sprintf("别名 %q 与受管理命令 %q 同名，函数定义冲突", abbr, base))
+		}
+		if len(targets) == 0 {
+			continue
+		}
+		if strings.HasSuffix(abbr, "+") {
+			word := strings.Fields(targets[0])[0]
+			if len(word) <= len(base) || !strings.HasPrefix(word, base) {
+				out = append(out, fmt.Sprintf("别名 %q 的目标 %q 不以 %q 开头或不够长", abbr, targets[0], base))
+			}
+		}
+		for _, p := range c.aliasFuncNames(abbr) {
+			if _, ok := c.Roots[p]; ok {
+				out = append(out, fmt.Sprintf("别名 %q 的前缀 %q 命中受管理命令 %q", abbr, p, p))
+			}
+		}
+	}
+	return out
 }
 
 func checkNode(n *Node, prefix []string) []string {

@@ -12,6 +12,7 @@ git lg                  →  git log --oneline --graph --all
 
 ## 特性
 
+- **命令名缩写**：`c` → `clear`、`g` → `git`，一级命令名也可缩写，目标有规则树时自动下钻
 - **多层缩写**：`colink data u` → `colink data upload`，层级任意嵌套
 - **下钻组合**：中间层也可定义缩写，`colink d u` 与 `colink data u` 等价
 - **前缀模式**：`"b+" = "branch"` 一条规则覆盖 `b`、`br`、`bra`、`bran`、`branc`
@@ -84,6 +85,11 @@ shr add git lg "log --oneline --graph --all"
 shr add colink data u upload          # 多层：colink data u → colink data upload
 shr add colink d data                 # 下钻：colink d u → colink data upload
 shr add git b+ branch                 # 前缀：git b / br / bra / bran / branc → git branch
+shr add npm build "run build"         # 纠错：npm build → npm run build（习惯漏 run，参数原样透传）
+
+shr add c clear                       # 命令名缩写：c → clear（参数透传）
+shr add g git                         # g → git（继续下钻 git 的子命令规则）
+shr add c+ clear                      # 前缀：c / cl / cle / clea → clear
 
 shr list                              # 树形查看全部规则
 shr expand colink d u --file x        # 预览展开结果（调试）
@@ -123,6 +129,11 @@ lg = "log --oneline --graph --all"   # 展开值可带参数（作为终点）
 
 [git.submodule]
 up = "update --init"
+
+[__shr.aliases]                       # 一级命令名缩写（argv[0] → target）
+c = "clear"                           # c → clear
+g = "git"                             # g → git（下钻 [git] 规则树）
+"c+" = "clear"                        # 前缀：c / cl / cle / clea → clear
 ```
 
 可直接手工编辑，之后运行 `shr doctor` 校验。文件变更会在下一个提示符前自动生效，无需重启 shell。
@@ -149,6 +160,8 @@ colink() {
 
 三条边界规则在编译产物中自然成立：缩写与原词合并分支（`d|data`）、失配走 `*)` 透传、命中后直接 `command` 执行不再回查。热加载通过 `precmd`（zsh）/ `PROMPT_COMMAND`（bash）比对配置 mtime，变化时 `eval "$(shr _gen posix)"` 重新定义函数。
 
+**一级命令名缩写**（`shr add <abbr> <target>`，2 参数）生成更简单的 wrapper：目标有规则树时以函数调用下钻（`g() { git "$@"; }`，由 `git` 的 case 继续匹配子命令），无规则树时直接 `command` 执行并回显（`c() { _shr_echo clear "$@"; command clear "$@"; }`）。`shr off` 时别名仍保留命令名替换（`command <target> "$@"`），仅关闭子命令下钻——否则缩写名会变成找不到的命令。
+
 ## 命令参考
 
 | 命令 | 说明 |
@@ -156,8 +169,8 @@ colink() {
 | `shr init [zsh\|bash]` | 输出 shell 集成代码（默认按 `$SHELL` 探测） |
 | `shr setup` | 交互式配置向导（TUI，自动探测 shell 与 PATH） |
 | `shr setup --yes` | 非交互应用（脚本/CI）；`--uninstall` 移除 |
-| `shr add <cmd> <path...> <expansion>` | 注册规则，最后一个参数是展开值 |
-| `shr remove <cmd> <path...>` | 删除规则或整个命名空间 |
+| `shr add <cmd> <path...> <expansion>` | 注册规则（3+ 参数：子命令缩写）；2 参数时为一级命令名缩写（`add c clear`） |
+| `shr remove <cmd> <path...>` | 删除规则或命名空间（2+ 参数）；1 参数删一级命令名缩写 |
 | `shr list` | 树形列出全部规则 |
 | `shr expand <argv...>` | 显示命令行的展开结果 |
 | `shr doctor` | 校验规则冲突 |
