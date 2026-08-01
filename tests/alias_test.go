@@ -1,17 +1,20 @@
-package core
+package core_test
 
 import (
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/havoc-rao/shell-rewrite/core"
 )
 
 func TestAddAliasBasic(t *testing.T) {
-	cfg := NewConfig()
+	cfg := core.NewConfig()
 	st, err := cfg.AddAlias("c", "clear")
 	if err != nil {
 		t.Fatalf("AddAlias: %v", err)
 	}
-	if st != StatusAdded {
+	if st != core.StatusAdded {
 		t.Fatalf("want StatusAdded, got %v", st)
 	}
 	if got := cfg.Aliases["c"]; len(got) != 1 || got[0] != "clear" {
@@ -20,26 +23,28 @@ func TestAddAliasBasic(t *testing.T) {
 }
 
 func TestAddAliasPrefix(t *testing.T) {
-	cfg := NewConfig()
+	cfg := core.NewConfig()
 	if _, err := cfg.AddAlias("c+", "clear"); err != nil {
 		t.Fatalf("AddAlias c+: %v", err)
 	}
-	names := cfg.aliasFuncNames("c+")
-	want := []string{"c", "cl", "cle", "clea"}
-	if strings.Join(names, ",") != strings.Join(want, ",") {
-		t.Fatalf("aliasFuncNames = %v, want %v", names, want)
+	// 前缀别名（c+）为每个前缀生成同名 wrapper，全部以 clear 为目标
+	for _, name := range []string{"c", "cl", "cle", "clea"} {
+		got := cfg.Expand([]string{name})
+		if s := strings.Join(got, " "); s != "clear" {
+			t.Fatalf("Expand(%s) = %q, want \"clear\"", name, s)
+		}
 	}
 }
 
 func TestAddAliasPrefixTooShort(t *testing.T) {
-	cfg := NewConfig()
+	cfg := core.NewConfig()
 	if _, err := cfg.AddAlias("clear+", "clear"); err == nil {
 		t.Fatal("expected error for prefix where base >= word length")
 	}
 }
 
 func TestAddAliasConflictWithRoot(t *testing.T) {
-	cfg := NewConfig()
+	cfg := core.NewConfig()
 	if _, err := cfg.Add("git", []string{"co"}, "checkout"); err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +54,7 @@ func TestAddAliasConflictWithRoot(t *testing.T) {
 }
 
 func TestExpandAliasSimple(t *testing.T) {
-	cfg := NewConfig()
+	cfg := core.NewConfig()
 	_, _ = cfg.AddAlias("c", "clear")
 	got := cfg.Expand([]string{"c"})
 	want := []string{"clear"}
@@ -59,7 +64,7 @@ func TestExpandAliasSimple(t *testing.T) {
 }
 
 func TestExpandAliasPassthroughArgs(t *testing.T) {
-	cfg := NewConfig()
+	cfg := core.NewConfig()
 	_, _ = cfg.AddAlias("c", "clear")
 	got := cfg.Expand([]string{"c", "-x"})
 	want := []string{"clear", "-x"}
@@ -69,7 +74,7 @@ func TestExpandAliasPassthroughArgs(t *testing.T) {
 }
 
 func TestExpandAliasDrillThrough(t *testing.T) {
-	cfg := NewConfig()
+	cfg := core.NewConfig()
 	_, _ = cfg.Add("git", []string{"co"}, "checkout")
 	_, _ = cfg.AddAlias("g", "git")
 	// g co -b feat → git checkout -b feat
@@ -81,7 +86,7 @@ func TestExpandAliasDrillThrough(t *testing.T) {
 }
 
 func TestExpandAliasPrefix(t *testing.T) {
-	cfg := NewConfig()
+	cfg := core.NewConfig()
 	_, _ = cfg.AddAlias("c+", "clear")
 	// cl → clear (前缀命中)
 	got := cfg.Expand([]string{"cl"})
@@ -92,7 +97,7 @@ func TestExpandAliasPrefix(t *testing.T) {
 }
 
 func TestExpandAliasNotManaged(t *testing.T) {
-	cfg := NewConfig()
+	cfg := core.NewConfig()
 	// 无别名无规则的命令原样返回
 	got := cfg.Expand([]string{"foo", "bar"})
 	want := []string{"foo", "bar"}
@@ -102,7 +107,7 @@ func TestExpandAliasNotManaged(t *testing.T) {
 }
 
 func TestGenAliasFuncDirectCommand(t *testing.T) {
-	cfg := NewConfig()
+	cfg := core.NewConfig()
 	_, _ = cfg.AddAlias("c", "clear")
 	out := cfg.GenPosixFuncs()
 	// clear 无规则树 → command 直接执行 + 回显
@@ -118,7 +123,7 @@ func TestGenAliasFuncDirectCommand(t *testing.T) {
 }
 
 func TestGenAliasFuncDrillThrough(t *testing.T) {
-	cfg := NewConfig()
+	cfg := core.NewConfig()
 	_, _ = cfg.Add("git", []string{"co"}, "checkout")
 	_, _ = cfg.AddAlias("g", "git")
 	out := cfg.GenPosixFuncs()
@@ -140,7 +145,7 @@ func TestGenAliasFuncDrillThrough(t *testing.T) {
 }
 
 func TestGenAliasFuncPrefix(t *testing.T) {
-	cfg := NewConfig()
+	cfg := core.NewConfig()
 	_, _ = cfg.AddAlias("c+", "clear")
 	out := cfg.GenPosixFuncs()
 	for _, name := range []string{"c", "cl", "cle", "clea"} {
@@ -151,7 +156,7 @@ func TestGenAliasFuncPrefix(t *testing.T) {
 }
 
 func TestGenAliasDisabledKeepsNameReplace(t *testing.T) {
-	cfg := NewConfig()
+	cfg := core.NewConfig()
 	_, _ = cfg.Add("git", []string{"co"}, "checkout")
 	_, _ = cfg.AddAlias("g", "git")
 	cfg.Enabled = false
@@ -166,7 +171,7 @@ func TestGenAliasDisabledKeepsNameReplace(t *testing.T) {
 }
 
 func TestAliasTOMLRoundTrip(t *testing.T) {
-	cfg := NewConfig()
+	cfg := core.NewConfig()
 	_, _ = cfg.Add("git", []string{"co"}, "checkout")
 	_, _ = cfg.AddAlias("c", "clear")
 	_, _ = cfg.AddAlias("g", "git")
@@ -176,7 +181,7 @@ func TestAliasTOMLRoundTrip(t *testing.T) {
 	if err := cfg.SaveTo(tmp); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := LoadFrom(tmp)
+	loaded, err := core.LoadFrom(tmp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,10 +197,25 @@ func TestAliasTOMLRoundTrip(t *testing.T) {
 }
 
 func TestDoctorAliasConflict(t *testing.T) {
-	cfg := NewConfig()
-	// 手工构造冲突：alias 名与 root 同名（正常 AddAlias 会拦截，但手编 TOML 可能产生）
-	cfg.Roots["git"] = NewNode()
-	cfg.Aliases["git"] = []string{"tig"}
+	// 手编 TOML 可能产生冲突：git 既是命令规则根又是别名（AddAlias 会拦截，
+	// 但手编文件可绕过），doctor 应报告。
+	toml := `[__shr]
+enabled = true
+
+[__shr.aliases]
+git = "tig"
+
+[git]
+co = "checkout"
+`
+	tmp := t.TempDir() + "/rules.toml"
+	if err := os.WriteFile(tmp, []byte(toml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := core.LoadFrom(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
 	issues := cfg.Doctor()
 	found := false
 	for _, is := range issues {
@@ -209,7 +229,7 @@ func TestDoctorAliasConflict(t *testing.T) {
 }
 
 func TestRemoveAlias(t *testing.T) {
-	cfg := NewConfig()
+	cfg := core.NewConfig()
 	_, _ = cfg.AddAlias("c", "clear")
 	if !cfg.RemoveAlias("c") {
 		t.Fatal("RemoveAlias returned false")

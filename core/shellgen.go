@@ -180,17 +180,33 @@ func genCase(b *strings.Builder, node *Node, prefix []string, ind int) {
 		// 计算 case pattern 列表
 		var pats []string
 		if strings.HasSuffix(abbr, "+") {
-			// 前缀规则："b+" → branch 展开为 b|br|bra|bran|branc；
-			// 让位顺序与 matchPrefix 一致：精确规则 > 更长 base 的前缀规则
 			base := strings.TrimSuffix(abbr, "+")
-			for _, p := range Prefixes(base, word) {
-				if _, exact := node.Rules[p]; exact {
-					continue
+			if multi {
+				// 多值前缀规则（p+ = ["pull", "push"]）：共享前缀（p、pu）是
+				// 歧义的，显式生成并弹 TUI；唯一前缀（pul、pus）交由失配推断
+				// 分支补全（与 matchPrefix 的 prefixRuleMatch 语义一致）
+				var cands []string
+				for _, v := range values {
+					cands = append(cands, strings.Fields(v)[0])
 				}
-				if shadowedByLongerPrefix(node, abbr, base, p) {
-					continue
+				for _, p := range sharedPrefixes(base, cands) {
+					if _, exact := node.Rules[p]; exact {
+						continue
+					}
+					pats = append(pats, p)
 				}
-				pats = append(pats, p)
+			} else {
+				// 单值前缀规则："b+" → branch 展开为 b|br|bra|bran|branc；
+				// 让位顺序与 matchPrefix 一致：精确规则 > 更长 base 的前缀规则
+				for _, p := range Prefixes(base, word) {
+					if _, exact := node.Rules[p]; exact {
+						continue
+					}
+					if shadowedByLongerPrefix(node, abbr, base, p) {
+						continue
+					}
+					pats = append(pats, p)
+				}
 			}
 		} else {
 			pats = []string{abbr}
@@ -235,12 +251,41 @@ func genCase(b *strings.Builder, node *Node, prefix []string, ind int) {
 		b.WriteString(pad + "    ;;\n")
 	}
 
-	fmt.Fprintf(b, "%s  *) command %s \"$@\" ;;\n", pad, quoteAll(prefix))
+	// 失配：若存在多值候选的唯一前缀推断，生成嵌套 case 做补全
+	// （如 git p=push|pull 时，git pus → git push、git pul → git pull）。
+	// 与 match.go 的 UniquePrefixWord 保持一致：仅严格前缀、唯一、未被规则占用。
+	words := MultiCandidateWords(node)
+	type inferBranch struct{ p, w string }
+	var infer []inferBranch
+	for _, w := range words {
+		for _, p := range UniquePrefixesOf(node, words, w) {
+			infer = append(infer, inferBranch{p, w})
+		}
+	}
+	if len(infer) > 0 {
+		b.WriteString(pad + `  *) case "$1" in` + "\n")
+		for _, br := range infer {
+			// 补全命中：shift 后原地补全，若补全词恰为子表名则下钻
+			if child, ok := node.Children[br.w]; ok {
+				fmt.Fprintf(b, "%s       %s) shift\n", pad, br.p)
+				genCase(b, child, appendToks(prefix, br.w), ind+3)
+				b.WriteString(pad + "       ;;\n")
+			} else {
+				// 回显展开后的完整命令（与其他缩写分支一致）
+				fmt.Fprintf(b, "%s       %s) shift; _shr_echo %s \"$@\"; command %s \"$@\" ;;\n",
+					pad, br.p, quoteAll(appendToks(prefix, br.w)), quoteAll(appendToks(prefix, br.w)))
+			}
+		}
+		fmt.Fprintf(b, "%s       *) command %s \"$@\" ;;\n", pad, quoteAll(prefix))
+		b.WriteString(pad + "    esac ;;\n")
+	} else {
+		fmt.Fprintf(b, "%s  *) command %s \"$@\" ;;\n", pad, quoteAll(prefix))
+	}
 	b.WriteString(pad + "esac\n")
 }
 
 // shadowedByLongerPrefix 判断前缀 p 是否会被另一条 base 更长的前缀规则捕获
-//（与 matchPrefix 的"最长 base 优先"语义保持一致，避免 case 顺序匹配产生歧义）。
+// （与 matchPrefix 的"最长 base 优先"语义保持一致，避免 case 顺序匹配产生歧义）。
 func shadowedByLongerPrefix(node *Node, self, base, p string) bool {
 	for key, targets := range node.Rules {
 		if key == self || !strings.HasSuffix(key, "+") {

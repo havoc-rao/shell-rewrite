@@ -171,6 +171,109 @@ func Prefixes(base, word string) []string {
 	return out
 }
 
+// MultiCandidateWords 返回节点多值规则的全部候选展开值首词（去重、排序），
+// 供失配时的唯一前缀推断使用：如 git p=push|pull 时，pus 是 push 的唯一前缀
+// 可补全为 push，而 p/pu 是两者公共前缀无法唯一推断。
+func MultiCandidateWords(n *Node) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, values := range n.Rules {
+		if len(values) <= 1 {
+			continue
+		}
+		for _, v := range values {
+			word := strings.Fields(v)[0]
+			if !seen[word] {
+				seen[word] = true
+				out = append(out, word)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// UniquePrefixesOf 返回词 w 的可推断前缀：严格前缀（从 1 到 len(w)-1），
+// 且不是任何其他候选词的前缀（否则无法唯一判断），也未被节点内规则占用。
+// 这些前缀在失配时用于补全（unique-prefix completion），优先级低于精确规则、
+// 命名空间与显式前缀规则（b+）。
+func UniquePrefixesOf(n *Node, words []string, w string) []string {
+	var pats []string
+	for l := 1; l < len(w); l++ {
+		p := w[:l]
+		conflict := false
+		for _, w2 := range words {
+			if w2 != w && strings.HasPrefix(w2, p) {
+				conflict = true
+				break
+			}
+		}
+		if conflict {
+			continue
+		}
+		if _, ok := n.Rules[p]; ok {
+			continue
+		}
+		if _, ok := n.Children[p]; ok {
+			continue
+		}
+		if _, ok := n.Rules[p+"+"]; ok {
+			continue
+		}
+		pats = append(pats, p)
+	}
+	return pats
+}
+
+// sharedPrefixes 返回候选词集合的公共前缀（长度从 base 开始，不含完整词）。
+// 用于多值前缀规则（如 p+ = ["pull", "push"]）：共享前缀（p、pu）是歧义的，
+// 命中后弹 TUI；唯一前缀（pul、pus）交由失配推断分支补全。
+func sharedPrefixes(base string, words []string) []string {
+	if len(words) < 2 {
+		return nil
+	}
+	minLen := len(words[0])
+	for _, w := range words[1:] {
+		if len(w) < minLen {
+			minLen = len(w)
+		}
+	}
+	var out []string
+	for l := len(base); l < minLen; l++ {
+		p := words[0][:l]
+		shared := true
+		for _, w := range words[1:] {
+			if !strings.HasPrefix(w, p) {
+				shared = false
+				break
+			}
+		}
+		if shared {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// UniquePrefixWord 返回 token 可推断的唯一候选词：token 是某多值候选词的
+// 严格前缀且唯一（如 git pus → push）。无法唯一推断返回 ("", false)。
+func UniquePrefixWord(n *Node, t string) (string, bool) {
+	words := MultiCandidateWords(n)
+	hit := ""
+	for _, w := range words {
+		if len(t) < len(w) && strings.HasPrefix(w, t) {
+			if hit != "" {
+				return "", false // 多个候选共享此前缀，无法唯一判断
+			}
+			hit = w
+		}
+	}
+	if hit == "" {
+		return "", false
+	}
+	return hit, true
+}
+
 // Remove 删除一条规则或整个命名空间，并回收空节点。返回是否删除成功。
 func (c *Config) Remove(cmd string, path []string) bool {
 	root := c.Roots[cmd]

@@ -11,7 +11,7 @@ LDFLAGS  := -s -w \
 	-X $(MODULE)/cli.Commit=$(GIT_COMMIT) \
 	-X $(MODULE)/cli.Date=$(BUILD_DATE)
 
-.PHONY: build run release snapshot clean install test help
+.PHONY: build run release snapshot clean install test test-verbose test-unit test-tests help
 
 ## build: 编译当前平台二进制到 dist/shr
 build:
@@ -51,9 +51,9 @@ install: build
 	cp $(DIST)/$(BINARY) /usr/local/bin/$(BINARY)
 	@echo "✓ 已安装到 /usr/local/bin/$(BINARY)"
 
-## test: 运行测试
+## test: 运行全部测试（core + tests/，禁用缓存避免误报）
 test:
-	go test ./...
+	go test ./... -count=1
 
 ## clean: 清理 dist/
 clean:

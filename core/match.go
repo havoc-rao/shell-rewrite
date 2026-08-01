@@ -54,6 +54,17 @@ func (c *Config) expandAt(node *Node, rest []string) []string {
 			}
 		}
 		if !ok {
+			// 唯一前缀推断：git p=push|pull 时 pus 可唯一补全为 push，
+			// pul 补全为 pull；p/pu 是公共前缀无法唯一推断，保持透传。
+			if word, found := UniquePrefixWord(node, t); found {
+				out = append(out, word)
+				i++
+				if child, ok2 := node.Children[word]; ok2 {
+					node = child
+					continue
+				}
+				break // 补全词作为终点，剩余透传
+			}
 			break // 失配，剩余透传
 		}
 		toks := strings.Fields(exps[0])
@@ -153,25 +164,51 @@ func (c *Config) Ambiguities(argv []string) []Ambiguity {
 
 // matchPrefix 查找前缀规则：key 形如 "b+"，当 t 是目标词的前缀、
 // 长度不短于 base、且不等于目标词时命中。多个命中时取 base 最长（最具体）者。
-// 返回该规则的首个候选展开值（多值前缀规则的运行时选择仍由 wrapper 弹 TUI）。
+//
+// 多值前缀规则（如 p+ = ["pull", "push"]）检查全部候选：t 唯一命中某候选（如
+// pus → push）时返回该候选；t 是多个候选的共享前缀（如 p、pu）时返回首个候选，
+// 运行时由 wrapper 弹 TUI 选择（见 Ambiguities）。
 func matchPrefix(n *Node, t string) (string, bool) {
 	best := ""
 	bestLen := -1
 	for key, targets := range n.Rules {
-		if !strings.HasSuffix(key, "+") {
-			continue
-		}
-		if len(targets) == 0 {
+		if !strings.HasSuffix(key, "+") || len(targets) == 0 {
 			continue
 		}
 		base := key[:len(key)-1]
-		if len(t) < len(base) {
+		if len(t) < len(base) || len(base) <= bestLen {
 			continue
 		}
-		word := strings.Fields(targets[0])[0]
-		if len(t) < len(word) && strings.HasPrefix(word, t) && len(base) > bestLen {
-			best, bestLen = targets[0], len(base)
+		unique, matched := prefixRuleMatch(t, base, targets)
+		if !matched {
+			continue
+		}
+		if unique == "" {
+			// 歧义（多个候选共享此前缀）：运行时弹 TUI，预览取首个候选
+			best, bestLen = strings.Fields(targets[0])[0], len(base)
+		} else {
+			best, bestLen = unique, len(base)
 		}
 	}
 	return best, bestLen >= 0
+}
+
+// prefixRuleMatch 判断 token t 对前缀规则（base+，targets）的匹配。
+// 多值前缀规则考虑全部候选：返回 (唯一命中的候选词，是否匹配)。
+// unique 为空但 matched 为 true 表示 t 是多个候选的共享前缀（歧义）。
+func prefixRuleMatch(t, base string, targets []string) (string, bool) {
+	hit := ""
+	for _, target := range targets {
+		word := strings.Fields(target)[0]
+		if len(t) >= len(base) && len(t) < len(word) && strings.HasPrefix(word, t) {
+			if hit != "" {
+				return "", true // 歧义
+			}
+			hit = word
+		}
+	}
+	if hit == "" {
+		return "", false
+	}
+	return hit, true
 }
