@@ -9,7 +9,7 @@ import (
 	"github.com/havoc-rao/shell-rewrite/core"
 )
 
-func TestFindProjectConfigWalkUp(t *testing.T) {
+func TestFindProjectRootWalkUp(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "a", "b")
 	if err := os.MkdirAll(filepath.Join(proj, ".shr"), 0o755); err != nil {
@@ -19,13 +19,38 @@ func TestFindProjectConfigWalkUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	depth := filepath.Join(proj, "sub", "deep", "x")
-	rootGot, pathGot := core.FindProjectConfig(depth, ".shr")
+	rootGot, pathGot := core.FindProjectRoot(depth, ".shr")
 	want := filepath.Join(proj, ".shr", "rules.toml")
 	if rootGot != proj || pathGot != want {
-		t.Fatalf("FindProjectConfig(%q) = (%q, %q), want (%q, %q)", depth, rootGot, pathGot, proj, want)
+		t.Fatalf("FindProjectRoot(%q) = (%q, %q), want (%q, %q)", depth, rootGot, pathGot, proj, want)
 	}
-	if _, p := core.FindProjectConfig(root, ".shr"); p != "" {
+	if _, p := core.FindProjectRoot(root, ".shr"); p != "" {
 		t.Fatalf("unexpected project config found above root: %s", p)
+	}
+}
+
+func TestFindProjectRootViaGitMarker(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "repo", "sub")
+	if err := os.MkdirAll(filepath.Join(root, "repo", ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rootGot, pathGot := core.FindProjectRoot(proj, ".shr")
+	repo := filepath.Join(root, "repo")
+	if rootGot != repo || pathGot != filepath.Join(repo, ".shr", "rules.toml") {
+		t.Fatalf("git repo should be a project: got (%q, %q), want (%q, %q)", rootGot, pathGot, repo, filepath.Join(repo, ".shr", "rules.toml"))
+	}
+}
+
+func TestFindProjectRootViaProjectDir(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "p")
+	if err := os.MkdirAll(filepath.Join(proj, ".shr"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rootGot, pathGot := core.FindProjectRoot(proj, ".shr")
+	if rootGot != proj || pathGot != filepath.Join(proj, ".shr", "rules.toml") {
+		t.Fatalf("existing <project_dir> directory should be a project: got (%q, %q)", rootGot, pathGot)
 	}
 }
 
@@ -59,6 +84,32 @@ func TestScopeProjectOverridesUser(t *testing.T) {
 	}
 	if scope.TargetConfig != scope.ProjectConfig {
 		t.Fatal("target should be the project config inside a project")
+	}
+}
+
+func TestScopeGitRepoDefaultsToProjectTarget(t *testing.T) {
+	base := t.TempDir()
+	userFile := filepath.Join(base, "rules.toml")
+	if err := os.WriteFile(userFile, []byte("[git]\nco = \"checkout\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(base, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 用户场景：git 仓库内尚无 .shr/rules.toml，写类命令默认应落在项目级
+	scope, err := core.LoadScopedAt(filepath.Join(repo, "sub", "deep"), userFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope.ProjectPath == "" {
+		t.Fatal("git repo should be detected as a project")
+	}
+	if scope.TargetConfig != scope.ProjectConfig || scope.TargetPath != scope.ProjectPath {
+		t.Fatalf("default write target should be the project: target=%s", scope.TargetPath)
+	}
+	if got := strings.Join(scope.Merged.Expand([]string{"git", "co"}), " "); got != "git checkout" {
+		t.Fatalf("merged view should keep user rules: %q", got)
 	}
 }
 

@@ -253,17 +253,19 @@ func nodeToMap(n *Node) map[string]interface{} {
 // Scope 是从某目录出发加载的完整配置视图：用户级 + 项目级合并。
 // 项目级规则文件为 <项目根>/<project_dir>/rules.toml（project_dir 默认 .shr，
 // 可用 SHR_PROJECT_DIR 环境变量或用户配置 [__shr] project_dir 自定义，如 .vscode/shr）。
+// 项目根由 FindProjectRoot 判定：任一祖先目录含 <project_dir> 目录或其 rules.toml，
+// 或存在 .git（git 仓库/工作树）即视为项目——因此写类命令默认落在项目级。
 type Scope struct {
 	CWD           string
 	UserConfig    *Config
 	UserPath      string
-	ProjectDir    string    // 生效的项目配置子目录（默认 .shr）
-	ProjectRoot   string    // 项目根目录；无项目级配置时为空串
-	ProjectPath   string    // 项目规则文件路径；无则空串
-	ProjectConfig *Config   // 项目配置；无则 nil
-	Merged        *Config   // 合并后的生效配置
-	TargetConfig  *Config   // 写入目标：项目存在则项目配置，否则用户配置
-	TargetPath    string    // 写入目标路径
+	ProjectDir    string  // 生效的项目配置子目录（默认 .shr）
+	ProjectRoot   string  // 项目根目录；无项目级配置时为空串
+	ProjectPath   string  // 项目规则文件路径；无则空串
+	ProjectConfig *Config // 项目配置；无则 nil
+	Merged        *Config // 合并后的生效配置
+	TargetConfig  *Config // 写入目标：项目存在则项目配置，否则用户配置
+	TargetPath    string  // 写入目标路径
 }
 
 // LoadScoped 从当前目录出发加载（用户级 + 项目级合并）。
@@ -293,7 +295,7 @@ func LoadScopedAt(cwd, userPath string) (*Scope, error) {
 		UserConfig: userCfg,
 		ProjectDir: EffectiveProjectDir(userRaw),
 	}
-	sp.ProjectRoot, sp.ProjectPath = FindProjectConfig(cwd, sp.ProjectDir)
+	sp.ProjectRoot, sp.ProjectPath = FindProjectRoot(cwd, sp.ProjectDir)
 	if sp.ProjectPath != "" {
 		praw, err := loadRaw(sp.ProjectPath)
 		if err != nil {
@@ -339,9 +341,14 @@ func EffectiveProjectDir(userRaw map[string]interface{}) string {
 	return defaultProjectDir
 }
 
-// FindProjectConfig 从 startDir 向上查找最近的 <项目根>/<projDir>/rules.toml，
-// 返回（项目根目录, 配置文件路径）；找不到返回 ("", "")。
-func FindProjectConfig(startDir, projDir string) (root, path string) {
+// FindProjectRoot 从 startDir 向上查找"项目根"：就近判定，同一目录内按序检查
+//  1. <dir>/<projDir>/rules.toml 是文件；或
+//  2. <dir>/<projDir> 是目录（手动创建了 `.shr/` 等）；或
+//  3. <dir>/.git 存在（git 仓库/工作树，.git 可为目录或文件）。
+//
+// 返回（项目根目录, <root>/<projDir>/rules.toml）—— 规则文件可能尚不存在
+// （如仅以 .git 作为项目标记时），写类命令会按需创建。找不到返回 ("", "")。
+func FindProjectRoot(startDir, projDir string) (root, rulesPath string) {
 	if startDir == "" {
 		startDir, _ = os.Getwd()
 	}
@@ -355,6 +362,13 @@ func FindProjectConfig(startDir, projDir string) (root, path string) {
 	for {
 		p := filepath.Join(dir, filepath.FromSlash(projDir), "rules.toml")
 		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return dir, p
+		}
+		pd := filepath.Join(dir, filepath.FromSlash(projDir))
+		if fi, err := os.Stat(pd); err == nil && fi.IsDir() {
+			return dir, p
+		}
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
 			return dir, p
 		}
 		parent := filepath.Dir(dir)

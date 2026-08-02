@@ -152,12 +152,17 @@ project_dir = ".vscode/shr"           # 可选：自定义项目级配置子目�
 co = "commit"          # 项目级优先：项目内 git co → git commit（覆盖用户级 checkout）
 ```
 
+**项目根判定**（就近向上查找）：任一祖先目录满足以下任一条即为项目——
+① 存在 `<project_dir>/rules.toml` 文件；② 存在 `<project_dir>` 目录；③ 存在 `.git`
+（git 仓库/工作树）。因此**在 git 仓库内 `shr add` 默认就写 `<仓库根>/<project_dir>/rules.toml`**
+（按需自动创建），不用先建目录或配置文件。
+
 规则在生成 wrapper 时**合并**：同名键项目级优先，其余继承用户级（`[__shr].enabled` /
 `allow_duplicates` 也按此规则，项目可设 `enabled = false` 关闭整个项目的复写）。
 `shr list` / `shr expand` / `shr doctor` 展示的都是合并后的视图；`shr path` 会同时打印
 用户级与项目级路径；`shr init project` 可在当前目录生成一个空项目规则文件。
 
-写类命令默认写入"当前目录附近"的项目文件（`--global` 强制写用户级）：
+写类命令默认写入项目文件（`--global` 强制写用户级）：
 全局规则 → `shr add --global git co checkout`；项目规则 → 在项目内直接 `shr add git co commit`。
 项目变动（编辑、新建、cd 进出）都会在下一个提示符前自动重载，无需重启 shell。
 

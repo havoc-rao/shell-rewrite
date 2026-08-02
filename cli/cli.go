@@ -41,10 +41,10 @@ Usage:
   shr version                             print version
 
 Project-level rules:
-  <项目根>/<project_dir>/rules.toml（默认 .shr，可用 SHR_PROJECT_DIR 环境变量或
-  用户配置 [__shr] project_dir 自定义，如 .vscode/shr）与用户级规则合并：
-  同名键项目级优先，其余继承用户级。项目内 shr add/remove 等默认写项目文件，
-  传 --global 写用户级文件。
+  git 仓库（或含 .shr 目录）即视为项目：<项目根>/<project_dir>/rules.toml
+  与用户级规则合并（同名键项目级优先，目录名可用 SHR_PROJECT_DIR 或用户配置
+  [__shr] project_dir 自定义，如 .vscode/shr）。shr add/remove 等默认写项目文件
+  （按需创建），--global 写用户级文件。
 
 Examples:
   shr add git co checkout               # git co        → git checkout
