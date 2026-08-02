@@ -7,15 +7,20 @@ import (
 )
 
 // GenInit 输出 shell 集成代码（wrapper 函数 + 热加载 hook），供 eval "$(shr init zsh)" 使用。
-func (c *Config) GenInit(shell string) (string, error) {
+// userPath 是用户级规则路径，projPath 是当前目录附近的项目级规则路径（无则空串，
+// 仅用于注释说明；shell 侧在运行时自行向上查找）。
+func (c *Config) GenInit(shell, userPath, projPath string) (string, error) {
 	var b strings.Builder
 	switch shell {
 	case "zsh", "bash":
 		fmt.Fprintf(&b, "# >>> shr init (%s) >>>\n", shell)
-		fmt.Fprintf(&b, "# rules: %s\n", Path())
+		fmt.Fprintf(&b, "# user rules: %s\n", userPath)
+		if projPath != "" {
+			fmt.Fprintf(&b, "# project rules: %s (仅在本项目内生效)\n", projPath)
+		}
 		b.WriteString("# note: existing aliases take precedence over functions — unalias if needed.\n\n")
 		b.WriteString(posixPrelude)
-		b.WriteString(c.GenPosixFuncs())
+		b.WriteString(c.genPosixFuncs(""))
 		b.WriteString(posixReloadFunc)
 		if shell == "zsh" {
 			b.WriteString(zshHook)
@@ -45,10 +50,35 @@ _shr_pick() {
 `
 
 const posixPrelude = `_SHR_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/shr/rules.toml"
+# 项目级规则子目录名：默认 .shr，可用 SHR_PROJECT_DIR 环境变量或用户配置
+# [__shr] project_dir 自定义（如 .vscode）；每次热加载（_gen posix）按生效值重写。
+_SHR_PROJECT_DIR="${SHR_PROJECT_DIR:-.shr}"
 
-_shr_mtime() {
-  # macOS/BSD stat 与 GNU stat 兼容
-  stat -f %m "$_SHR_CONFIG" 2>/dev/null || stat -c %Y "$_SHR_CONFIG" 2>/dev/null || echo 0
+# 从 $PWD 向上查找最近的 <项目根>/$_SHR_PROJECT_DIR/rules.toml
+_shr_project_config() {
+  local dir="$PWD" f
+  while :; do
+    f="$dir/$_SHR_PROJECT_DIR/rules.toml"
+    if [ -f "$f" ]; then printf '%s\n' "$f"; return 0; fi
+    [ "$dir" = "/" ] && break
+    case "$dir" in
+      /*/*) dir="${dir%/*}" ;;
+      /*) dir="/" ;;
+      *) break ;;
+    esac
+  done
+  return 1
+}
+
+# 热加载标记：用户配置 mtime + 最近项目配置（路径|mtime）；
+# 包含路径使 cd 进出项目、切换项目也触发重载。
+_shr_marker() {
+  local m pc
+  m=$(stat -f %m "$_SHR_CONFIG" 2>/dev/null || stat -c %Y "$_SHR_CONFIG" 2>/dev/null || echo 0)
+  if pc=$(_shr_project_config); then
+    m="$m|$pc|$(stat -f %m "$pc" 2>/dev/null || stat -c %Y "$pc" 2>/dev/null || echo 0)"
+  fi
+  printf '%s\n' "$m"
 }
 
 # 缩写命中时回显展开后的命令：暗色输出到 stderr，仅交互式终端；
@@ -88,36 +118,6 @@ esac
 // shr on 后热加载无缝恢复。一级命令名别名始终保留命令名替换（否则缩写名
 // 会变成找不到的命令），仅在 Enabled 时下钻目标规则树。
 func (c *Config) GenPosixFuncs() string {
-	var b strings.Builder
-	// _shr_pick 随热加载一起重新定义：老会话的 prelude 可能是旧版（无此函数），
-	// 仅靠 init 注入会让多值分支引用未定义函数；放在此处保证 _gen posix 自洽。
-	b.WriteString(posixPickFunc)
-	for _, cmd := range c.SortedRoots() {
-		if c.Enabled {
-			b.WriteString(genFunc(cmd, c.Roots[cmd]))
-		} else {
-			b.WriteString(genPassthrough(cmd))
-		}
-		b.WriteString("\n")
-	}
-	b.WriteString(c.genAliasFuncs())
-	return b.String()
-}
-
-// genAliasFuncs 生成一级命令名缩写的 wrapper 函数。
-//
-//	目标有规则树（root）+ Enabled → 函数调用下钻（target "$@"），
-//	  由目标规则树负责回显与子命令展开；
-//	目标无规则树 + Enabled        → command 直接执行，命中时回显展开后的命令；
-//	Enabled 为 false（shr off）   → command <target> "$@"，保留命令名替换、关闭下钻。
-//
-// 前缀模式（"c+"）为每个未被更具体规则覆盖的前缀各生成一个同名函数。
-func (c *Config) genAliasFuncs() string {
-// GenPosixFuncs 生成全部 wrapper 函数（bash/zsh 通用），热加载时重新 eval 即可生效。
-// Enabled 为 false 时退化为透传函数（command <cmd> "$@"），保留函数定义以便
-// shr on 后热加载无缝恢复。一级命令名别名始终保留命令名替换（否则缩写名
-// 会变成找不到的命令），仅在 Enabled 时下钻目标规则树。
-func (c *Config) GenPosixFuncs() string {
 	return c.genPosixFuncs("")
 }
 
@@ -146,7 +146,26 @@ func (c *Config) genPosixFuncs(projDir string) string {
 		} else {
 			b.WriteString(genPassthrough(cmd))
 		}
-		b.WriteString("\
+		b.WriteString("\n")
+	}
+	b.WriteString(c.genAliasFuncs())
+	return b.String()
+}
+
+// shSingleQuote 用单引号包裹并转义，生成 shell 安全的字面量。
+func shSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// genAliasFuncs 生成一级命令名缩写的 wrapper 函数。
+//
+//	目标有规则树（root）+ Enabled → 函数调用下钻（target "$@"），
+//	  由目标规则树负责回显与子命令展开；
+//	目标无规则树 + Enabled        → command 直接执行，命中时回显展开后的命令；
+//	Enabled 为 false（shr off）   → command <target> "$@"，保留命令名替换、关闭下钻。
+//
+// 前缀模式（"c+"）为每个未被更具体规则覆盖的前缀各生成一个同名函数。
+func (c *Config) genAliasFuncs() string {
 	var b strings.Builder
 	for _, abbr := range c.SortedAliases() {
 		targets := c.Aliases[abbr]

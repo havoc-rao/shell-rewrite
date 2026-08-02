@@ -23,22 +23,28 @@ var (
 const usageText = `shr — shell command shortener: rewrite commands by rules before execution
 
 Usage:
-  shr init [zsh|bash]                   print shell integration code (for eval "$(shr init zsh)")
-  shr setup                             interactive setup wizard (TUI, writes rc)
-  shr add <cmd> <path...> <expansion>   register a rule (3+ args: subcommand abbrev)
-  shr add <abbr> <target>               register a top-level command alias (2 args: argv[0])
-  shr remove <cmd> <path...>            remove a rule or namespace (2+ args)
-  shr remove <abbr>                     remove a top-level alias (1 arg)
-  shr list                              show all rules as a tree
-  shr expand <argv...>                  show what a command expands to
-  shr doctor                            check rules for conflicts
-  shr path                              print rules file path
-  shr on                                enable rewriting (default)
-  shr off                               disable rewriting (passthrough)
-  shr status                            show whether rewriting is enabled
-  shr dup on|off                        allow/disallow multi-value abbrevs (default on)
-  shr update [version] [--check]        self-update from GitHub Releases
-  shr version                           print version
+  shr init [zsh|bash|project]             print shell integration code (eval "$(shr init zsh)");
+                                          'project' scaffolds <project_dir>/rules.toml in current dir
+  shr setup                               interactive setup wizard (TUI, writes rc)
+  shr add <cmd> <path...> <expansion>     register a rule (3+ args: subcommand abbrev)
+  shr add <abbr> <target>                 register a top-level command alias (2 args)
+  shr remove <cmd> <path...>              remove a rule or namespace (2+ args)
+  shr remove <abbr>                       remove a top-level alias (1 arg)
+  shr list                                show all rules as a tree
+  shr expand <argv...>                    show what a command expands to
+  shr doctor                              check rules for conflicts
+  shr path                                print user rules path; project rules path if inside a project
+  shr on | shr off [--global]             enable/disable rewriting (use --global to target user-level)
+  shr status                              show whether rewriting is enabled
+  shr dup on|off [--global]               allow/disallow multi-value abbrevs (default on)
+  shr update [version] [--check]          self-update from GitHub Releases
+  shr version                             print version
+
+Project-level rules:
+  <项目根>/<project_dir>/rules.toml（默认 .shr，可用 SHR_PROJECT_DIR 环境变量或
+  用户配置 [__shr] project_dir 自定义，如 .vscode/shr）与用户级规则合并：
+  同名键项目级优先，其余继承用户级。项目内 shr add/remove 等默认写项目文件，
+  传 --global 写用户级文件。
 
 Examples:
   shr add git co checkout               # git co        → git checkout
@@ -81,12 +87,11 @@ func Run(args []string) int {
 	case "_pick":
 		return cmdPick(args[2:])
 	case "path":
-		fmt.Println(core.Path())
-		return 0
+		return cmdPath()
 	case "on", "enable":
-		return cmdToggle(true)
+		return cmdToggle(args[2:], true)
 	case "off", "disable":
-		return cmdToggle(false)
+		return cmdToggle(args[2:], false)
 	case "status":
 		return cmdStatus()
 	case "dup":
@@ -105,13 +110,42 @@ func Run(args []string) int {
 	}
 }
 
-func loadOrDie() *core.Config {
-	cfg, err := core.Load()
+// loadScopeOrDie 从当前目录加载（用户级 + 项目级合并）配置视图，失败则退出。
+//
+// 注意：写类命令（add/remove/on/off/dup）在项目内默认写项目文件（见
+// Scope.TargetConfig），--global 时写用户级。
+func loadScopeOrDie() *core.Scope {
+	s, err := core.LoadScoped("")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "shr:", err)
 		os.Exit(1)
 	}
-	return cfg
+	return s
+}
+
+// parseGlobalFlag 提取 --global / -g，返回是否强制写用户级，以及剩余参数。
+func parseGlobalFlag(args []string) (global bool, rest []string) {
+	for _, a := range args {
+		if a == "--global" || a == "-g" {
+			global = true
+		} else {
+			rest = append(rest, a)
+		}
+	}
+	return global, rest
+}
+
+func saveScope(scope *core.Scope, global bool) error {
+	if global {
+		return scope.SaveGlobal()
+	}
+	return scope.Save()
+}
+
+func printScopeTarget(scope *core.Scope, global bool) {
+	if !global && scope.ProjectPath != "" {
+		fmt.Printf("  (project: %s)\n", scope.ProjectPath)
+	}
 }
 
 const initTTYHintTpl = `shr: 'init' prints shell code that must be evaluated into your shell.
@@ -131,6 +165,9 @@ To just inspect the generated code without loading, pipe it:
 func cmdInit(args []string) int {
 	shell := ""
 	for _, a := range args {
+		if a == "project" {
+			return cmdInitProject()
+		}
 		if strings.HasPrefix(a, "-") && a != "-" {
 			fmt.Fprintf(os.Stderr, "shr init: unknown flag %q (see: shr help)\n", a)
 			return 2
@@ -146,8 +183,8 @@ func cmdInit(args []string) int {
 		shell = filepath.Base(os.Getenv("SHELL"))
 	}
 
-	cfg := loadOrDie()
-	code, err := cfg.GenInit(shell)
+	scope := loadScopeOrDie()
+	code, err := scope.Merged.GenInit(shell, scope.UserPath, scope.ProjectPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "shr:", err)
 		return 1
@@ -161,6 +198,30 @@ func cmdInit(args []string) int {
 		return 1
 	}
 	fmt.Print(code)
+	return 0
+}
+
+// cmdInitProject 在当前目录生成一份项目级规则文件 <project_dir>/rules.toml，
+// 之后在项目内的 shr add/remove 默认写到这里。
+func cmdInitProject() int {
+	scope := loadScopeOrDie()
+	p := filepath.Join(scope.CWD, filepath.FromSlash(scope.ProjectDir), "rules.toml")
+	if _, err := os.Stat(p); err == nil {
+		fmt.Println("exists: " + p)
+		return 0
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		fmt.Fprintln(os.Stderr, "shr:", err)
+		return 1
+	}
+	const content = "# shr 项目级规则：只在本项目目录树下生效，与用户级规则（~/.config/shr/rules.toml）合并，\n" +
+		"# 同名键以项目级优先；项目内执行 shr add/remove 会写到这里（--global 写用户级）。\n" +
+		"#\n# 示例：\n# [git]\n# co = \"checkout\"\n"
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, "shr:", err)
+		return 1
+	}
+	fmt.Println("created: " + p)
 	return 0
 }
 
@@ -181,10 +242,17 @@ func isTerminal(f *os.File) bool {
 }
 
 func cmdAdd(args []string) int {
+	global, args := parseGlobalFlag(args)
+
+	scope := loadScopeOrDie()
+	cfg := scope.TargetConfig
+	if global {
+		cfg = scope.UserConfig
+	}
+
 	// 两参数：一级命令名缩写（argv[0] → target），无子命令路径
 	if len(args) == 2 {
 		abbr, target := args[0], args[1]
-		cfg := loadOrDie()
 		status, err := cfg.AddAlias(abbr, target)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "shr:", err)
@@ -194,15 +262,12 @@ func cmdAdd(args []string) int {
 			fmt.Printf("exists:  %s → %s\n", abbr, target)
 			return 0
 		}
-		if err := cfg.Save(); err != nil {
+		if err := saveScope(scope, global); err != nil {
 			fmt.Fprintln(os.Stderr, "shr:", err)
 			return 1
 		}
-		verb := "added:  "
-		if status == core.StatusAppended {
-			verb = "appended:"
-		}
-		fmt.Printf("%s %s → %s\n", verb, abbr, target)
+		fmt.Printf("%s %s → %s\n", addVerb(status), abbr, target)
+		printScopeTarget(scope, global)
 		return 0
 	}
 	if len(args) < 3 {
@@ -213,7 +278,6 @@ func cmdAdd(args []string) int {
 	path := args[1 : len(args)-1]
 	expansion := args[len(args)-1]
 
-	cfg := loadOrDie()
 	status, err := cfg.Add(cmd, path, expansion)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "shr:", err)
@@ -225,7 +289,7 @@ func cmdAdd(args []string) int {
 		fmt.Printf("exists:  %s → %s\n", lhs, expansion)
 		return 0
 	}
-	if err := cfg.Save(); err != nil {
+	if err := saveScope(scope, global); err != nil {
 		fmt.Fprintln(os.Stderr, "shr:", err)
 		return 1
 	}
@@ -233,54 +297,68 @@ func cmdAdd(args []string) int {
 	lhs := strings.Join(append([]string{cmd}, path...), " ")
 	rhsParts := append([]string{cmd}, path[:len(path)-1]...)
 	rhsParts = append(rhsParts, strings.Fields(expansion)...)
-	verb := "added:  "
-	if status == core.StatusAppended {
-		verb = "appended:"
-	}
-	fmt.Printf("%s %s → %s\n", verb, lhs, strings.Join(rhsParts, " "))
+	fmt.Printf("%s %s → %s\n", addVerb(status), lhs, strings.Join(rhsParts, " "))
+	printScopeTarget(scope, global)
 	return 0
 }
 
+func addVerb(status core.AddStatus) string {
+	if status == core.StatusAppended {
+		return "appended:"
+	}
+	return "added:  "
+}
+
 func cmdRemove(args []string) int {
+	global, args := parseGlobalFlag(args)
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: shr remove <cmd> <path...>  |  shr remove <abbr>")
 		return 2
 	}
+	scope := loadScopeOrDie()
+	cfg := scope.TargetConfig
+	if global {
+		cfg = scope.UserConfig
+	}
 	// 单参数：删除一级命令名缩写
 	if len(args) == 1 {
-		cfg := loadOrDie()
 		if !cfg.RemoveAlias(args[0]) {
 			fmt.Fprintf(os.Stderr, "shr: alias not found: %s\n", args[0])
 			return 1
 		}
-		if err := cfg.Save(); err != nil {
+		if err := saveScope(scope, global); err != nil {
 			fmt.Fprintln(os.Stderr, "shr:", err)
 			return 1
 		}
 		fmt.Printf("removed: %s\n", args[0])
+		printScopeTarget(scope, global)
 		return 0
 	}
-	cfg := loadOrDie()
 	if !cfg.Remove(args[0], args[1:]) {
 		fmt.Fprintf(os.Stderr, "shr: rule not found: %s\n", strings.Join(args, " "))
 		return 1
 	}
-	if err := cfg.Save(); err != nil {
+	if err := saveScope(scope, global); err != nil {
 		fmt.Fprintln(os.Stderr, "shr:", err)
 		return 1
 	}
 	fmt.Printf("removed: %s\n", strings.Join(args, " "))
+	printScopeTarget(scope, global)
 	return 0
 }
 
 func cmdList() int {
-	cfg := loadOrDie()
+	scope := loadScopeOrDie()
+	cfg := scope.Merged
 	if !cfg.Enabled {
 		fmt.Println("(rewriting disabled — shr on to enable)")
 	}
 	if len(cfg.Roots) == 0 && len(cfg.Aliases) == 0 {
 		fmt.Println("no rules yet — try: shr add git co checkout")
 		return 0
+	}
+	if scope.ProjectPath != "" {
+		fmt.Println("(project: " + scope.ProjectPath + ")")
 	}
 	for _, cmd := range cfg.SortedRoots() {
 		fmt.Println(cmd)
@@ -338,17 +416,17 @@ func cmdExpand(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: shr expand <argv...>")
 		return 2
 	}
-	cfg := loadOrDie()
-	fmt.Println(strings.Join(cfg.Expand(args), " "))
-	for _, a := range cfg.Ambiguities(args) {
+	scope := loadScopeOrDie()
+	fmt.Println(strings.Join(scope.Merged.Expand(args), " "))
+	for _, a := range scope.Merged.Ambiguities(args) {
 		fmt.Fprintf(os.Stderr, "shr: %s 有多个候选: %s（运行时将弹出选择）\n", a.At, strings.Join(a.Values, " | "))
 	}
 	return 0
 }
 
 func cmdDoctor() int {
-	cfg := loadOrDie()
-	issues := cfg.Doctor()
+	scope := loadScopeOrDie()
+	issues := scope.Merged.Doctor()
 	if len(issues) == 0 {
 		fmt.Println("no issues found")
 		return 0
@@ -364,15 +442,24 @@ func cmdGen(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: shr _gen posix")
 		return 2
 	}
-	cfg := loadOrDie()
-	fmt.Print(cfg.GenPosixFuncs())
+	scope := loadScopeOrDie()
+	fmt.Print(scope.Merged.GenPosixFuncsFor(scope.ProjectDir))
 	return 0
 }
 
 // cmdToggle 开关复写：写入配置后 mtime 变化，下一个提示符前热加载重新生成
 // wrapper 函数（开启→正常 case，关闭→透传），无需重启 shell。
-func cmdToggle(enable bool) int {
-	cfg := loadOrDie()
+func cmdToggle(args []string, enable bool) int {
+	global, rest := parseGlobalFlag(args)
+	if len(rest) > 0 {
+		fmt.Fprintf(os.Stderr, "shr: unknown argument %q (see: shr help)\n", strings.Join(rest, " "))
+		return 2
+	}
+	scope := loadScopeOrDie()
+	cfg := scope.TargetConfig
+	if global {
+		cfg = scope.UserConfig
+	}
 	if cfg.Enabled == enable {
 		if enable {
 			fmt.Println("shr: rewriting already enabled")
@@ -382,7 +469,8 @@ func cmdToggle(enable bool) int {
 		return 0
 	}
 	cfg.Enabled = enable
-	if err := cfg.Save(); err != nil {
+	cfg.EnabledSet = true
+	if err := saveScope(scope, global); err != nil {
 		fmt.Fprintln(os.Stderr, "shr:", err)
 		return 1
 	}
@@ -395,8 +483,8 @@ func cmdToggle(enable bool) int {
 }
 
 func cmdStatus() int {
-	cfg := loadOrDie()
-	if cfg.Enabled {
+	scope := loadScopeOrDie()
+	if scope.Merged.Enabled {
 		fmt.Println("enabled")
 	} else {
 		fmt.Println("disabled")
@@ -409,8 +497,14 @@ func cmdStatus() int {
 //   - off：add 命中已存在即报错，避免静默覆盖。
 //
 // 不带参数则打印当前状态（on/off）。与 on/off（复写总开关）正交，互不影响。
+// 默认写项目文件（在项目内时），--global 写用户级。
 func cmdDup(args []string) int {
-	cfg := loadOrDie()
+	global, args := parseGlobalFlag(args)
+	scope := loadScopeOrDie()
+	cfg := scope.TargetConfig
+	if global {
+		cfg = scope.UserConfig
+	}
 	if len(args) == 0 {
 		if cfg.AllowDuplicates {
 			fmt.Println("on")
@@ -428,7 +522,8 @@ func cmdDup(args []string) int {
 		fmt.Fprintf(os.Stderr, "shr dup: unknown value %q (use: on|off)\n", args[0])
 		return 2
 	}
-	if err := cfg.Save(); err != nil {
+	cfg.AllowDuplicatesSet = true
+	if err := saveScope(scope, global); err != nil {
 		fmt.Fprintln(os.Stderr, "shr:", err)
 		return 1
 	}
@@ -436,6 +531,14 @@ func cmdDup(args []string) int {
 		fmt.Println("shr: duplicates allowed — multi-value abbrevs prompt at runtime")
 	} else {
 		fmt.Println("shr: duplicates disallowed — add rejects existing abbrev")
+	}
+	return 0
+}
+
+func cmdPath() int {
+	fmt.Println(core.Path())
+	if scope, err := core.LoadScoped(""); err == nil && scope.ProjectPath != "" {
+		fmt.Println("project: " + scope.ProjectPath)
 	}
 	return 0
 }

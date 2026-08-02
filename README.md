@@ -128,7 +128,40 @@ d = "download"
 [git]
 co = "checkout"
 "b+" = "branch"                      # 前缀模式：b、br、bra、bran、branc 均可
-lg = "log --oneline --graph --all"   # 展开值可
+lg = "log --oneline --graph --all"   # 展开值可带参数（作为终点）
+
+[git.submodule]
+up = "update --init"
+
+[__shr.aliases]                       # 一级命令名缩写（argv[0] → target）
+c = "clear"                           # c → clear
+g = "git"                             # g → git（下钻 [git] 规则树）
+"c+" = "clear"                        # 前缀：c / cl / cle / clea → clear
+
+[__shr]                               # 元信息
+project_dir = ".vscode/shr"           # 可选：自定义项目级配置子目录（默认 .shr）
+```
+
+**项目级**：项目根目录下的 `<项目根>/<project_dir>/rules.toml`（默认 `.shr`，可用环境变量
+`SHR_PROJECT_DIR` 或用户配置的 `[__shr] project_dir` 自定义，如 `.vscode/shr`），
+只在该项目树下生效，适合团队/单项目共享的习惯缩写：
+
+```toml
+# <项目根>/.shr/rules.toml —— 在项目内 `shr add/remove` 默认写到这里
+[git]
+co = "commit"          # 项目级优先：项目内 git co → git commit（覆盖用户级 checkout）
+```
+
+规则在生成 wrapper 时**合并**：同名键项目级优先，其余继承用户级（`[__shr].enabled` /
+`allow_duplicates` 也按此规则，项目可设 `enabled = false` 关闭整个项目的复写）。
+`shr list` / `shr expand` / `shr doctor` 展示的都是合并后的视图；`shr path` 会同时打印
+用户级与项目级路径；`shr init project` 可在当前目录生成一个空项目规则文件。
+
+写类命令默认写入"当前目录附近"的项目文件（`--global` 强制写用户级）：
+全局规则 → `shr add --global git co checkout`；项目规则 → 在项目内直接 `shr add git co commit`。
+项目变动（编辑、新建、cd 进出）都会在下一个提示符前自动重载，无需重启 shell。
+
+配置均可手工编辑，之后运行 `shr doctor` 校验。
 
 ## 工作原理
 
@@ -161,6 +194,16 @@ colink() {
 | `shr init [zsh\|bash\|project]` | 输出 shell 集成代码（默认按 `$SHELL` 探测）；`project` 在当前目录生成项目级规则文件 `<project_dir>/rules.toml` |
 | `shr setup` | 交互式配置向导（TUI，自动探测 shell 与 PATH） |
 | `shr setup --yes` | 非交互应用（脚本/CI）；`--uninstall` 移除 |
+| `shr add <cmd> <path...> <expansion>` | 注册规则（3+ 参数：子命令缩写）；2 参数时为一级命令名缩写（`add c clear`）；`--global` 写用户级 |
+| `shr remove <cmd> <path...>` | 删除规则或命名空间（2+ 参数）；1 参数删一级命令名缩写；`--global` 同上 |
+| `shr list` | 树形列出合并后的全部规则 |
+| `shr expand <argv...>` | 显示命令行的展开结果 |
+| `shr doctor` | 校验规则冲突 |
+| `shr path` | 打印用户级路径（项目内会附带打印项目级路径） |
+| `shr on` / `shr off` | 开启/关闭复写（关闭后 wrapper 退化为透传，下一个提示符生效）；`--global` 写用户级 |
+| `shr status` | 查看复写开关状态（合并视图） |
+| `shr dup on\|off` | 允许/禁止多值缩写；`--global` 写用户级 |
+| `shr update [version] [--check]` | 从 GitHub Releases 自更新到最新（或指定）版本 |
 
 ## 路线图
 

@@ -166,10 +166,10 @@ func detectShell() string {
 type itemKind int
 
 const (
-	itemShell itemKind = iota // shell 集成（勾选）
-	itemPath                  // 加入 PATH（勾选）
-	itemConfirm               // 应用
-	itemCancel                // 取消
+	itemShell   itemKind = iota // shell 集成（勾选）
+	itemPath                    // 加入 PATH（勾选）
+	itemConfirm                 // 应用
+	itemCancel                  // 取消
 )
 
 type setupItem struct {

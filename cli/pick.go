@@ -41,21 +41,17 @@ func cmdPick(args []string) int {
 	// 强制色彩档位为 TrueColor，绕开 lipgloss 的自动探测。
 	//
 	// 背景：wrapper 用 $(shr _pick ...) 捕获本进程的 stdout，命令替换会把
-	// os.Stdout 变成管道（非终端），而 lipgloss 的默认探测正是基于 os.Stdout
-	// 判断"是否终端 / 是否支持颜色"，因此永远判定为无色。
+	// os.Stdout 变成管道（非终端），而 lipgloss 的默认探测正是基于 os.Stdout 判断是否终端 / 是否支持颜色"，因此永远判定为无色。
 	//
-	// 之前尝试过 lipgloss.NewRenderer(os.Stderr) + SetDefaultRenderer 来"换一个
-	// renderer"，但没有效果：包级 SetDefaultRenderer 只是让*包变量* renderer
-	// 指向新对象，而本文件下方 var 块里的 pickBoxStyle 等 Style 在包初始化时
-	// （早于 cmdPick 执行）就已经用 lipgloss.NewStyle() 捕获了*当时*的 renderer
-	// 指针；后续重新赋值包变量不会回填到这些已经持有旧指针的 Style 上，颜色探测
-	// 依然发生在最初那个基于 os.Stdout 的 renderer 上。
+	// 之前也试过 lipgloss.NewRenderer(os.Stderr) + SetDefaultRenderer 换 renderer，无效。
+	// 原因：SetDefaultRenderer 只改包变量 renderer 的指向。
+	// pickBoxStyle 等 Style 在包初始化时（早于 cmdPick）已用 NewStyle() 捕获当时的 renderer 指针。
+	// 改包变量不会回填到这些持有旧指针的 Style 上。
+	// 颜色探测因此仍发生在最初基于 os.Stdout 的 renderer 上。
 	//
 	// lipgloss.SetColorProfile 则是在已存在的单例 renderer 对象上原地写字段
-	// （r.colorProfile / r.explicitColorProfile），不换指针，因此所有早已持有
-	// 该指针的 Style 都会立即感知到——这才是真正生效的修法。
-	// 渲染目标 /dev/tty 已知支持颜色（截图可见方框字符正常显示），直接给最高档
-	// 位即可，无需再探测。
+	// （r.colorProfile / r.explicitColorProfile），不换指针，因此所有早已持有该指针的 Style 都会立即感知到——这才是真正生效的修法。
+	// 渲染目标 /dev/tty 已知支持颜色（截图可见方框字符正常显示），直接给最高档位即可，无需再探测。
 	lipgloss.SetColorProfile(termenv.TrueColor)
 
 	// 选择记忆：光标默认停在上次选中的候选上（按值匹配，候选已变动则回退首个）。
