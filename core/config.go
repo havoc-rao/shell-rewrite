@@ -16,9 +16,9 @@ import (
 // project_dir 自定义项目级配置的子目录名（默认 .shr）。
 const metaKey = "__shr"
 
-// defaultProjectDir 是项目级配置的默认子目录（相对项目根）：<项目根>/.shr/rules.toml。
+// DefaultProjectDir 是项目级配置的默认子目录（相对项目根）：<项目根>/.shr/rules.toml。
 // 可用环境变量 SHR_PROJECT_DIR 或用户配置的 [__shr] project_dir 覆盖（如 .vscode/shr）。
-const defaultProjectDir = ".shr"
+const DefaultProjectDir = ".shr"
 
 // Path 返回用户级规则文件路径：$XDG_CONFIG_HOME/shr/rules.toml 或 ~/.config/shr/rules.toml。
 func Path() string {
@@ -80,7 +80,7 @@ func configFromRaw(raw map[string]interface{}) (*Config, error) {
 					cfg.AllowDuplicates = d
 					cfg.AllowDuplicatesSet = true
 				}
-				if pd, ok := m["project_dir"].(string); ok && validProjectDir(pd) {
+				if pd, ok := m["project_dir"].(string); ok && ValidProjectDir(pd) {
 					cfg.ProjectDir = pd
 				}
 				if a, ok := m["aliases"].(map[string]interface{}); ok {
@@ -256,16 +256,17 @@ func nodeToMap(n *Node) map[string]interface{} {
 // 项目根由 FindProjectRoot 判定：任一祖先目录含 <project_dir> 目录或其 rules.toml，
 // 或存在 .git（git 仓库/工作树）即视为项目——因此写类命令默认落在项目级。
 type Scope struct {
-	CWD           string
-	UserConfig    *Config
-	UserPath      string
-	ProjectDir    string  // 生效的项目配置子目录（默认 .shr）
-	ProjectRoot   string  // 项目根目录；无项目级配置时为空串
-	ProjectPath   string  // 项目规则文件路径；无则空串
-	ProjectConfig *Config // 项目配置；无则 nil
-	Merged        *Config // 合并后的生效配置
-	TargetConfig  *Config // 写入目标：项目存在则项目配置，否则用户配置
-	TargetPath    string  // 写入目标路径
+	CWD            string
+	UserConfig     *Config
+	UserPath       string
+	ProjectDir     string  // 生效的项目配置子目录（默认 .shr）
+	ProjectRoot    string  // 项目根目录；无项目级配置时为空串
+	ProjectPath    string  // 项目规则文件路径；无则空串
+	HasProjectFile bool    // 项目规则文件是否已存在（add 时用于提示先 shr init）
+	ProjectConfig  *Config // 项目配置；无则 nil
+	Merged         *Config // 合并后的生效配置
+	TargetConfig   *Config // 写入目标：项目存在则项目配置，否则用户配置
+	TargetPath     string  // 写入目标路径
 }
 
 // LoadScoped 从当前目录出发加载（用户级 + 项目级合并）。
@@ -297,6 +298,9 @@ func LoadScopedAt(cwd, userPath string) (*Scope, error) {
 	}
 	sp.ProjectRoot, sp.ProjectPath = FindProjectRoot(cwd, sp.ProjectDir)
 	if sp.ProjectPath != "" {
+		if fi, err := os.Stat(sp.ProjectPath); err == nil && !fi.IsDir() {
+			sp.HasProjectFile = true
+		}
 		praw, err := loadRaw(sp.ProjectPath)
 		if err != nil {
 			return nil, err
@@ -330,36 +334,49 @@ func (s *Scope) SaveGlobal() error {
 // EffectiveProjectDir 返回生效的项目配置子目录名：
 // SHR_PROJECT_DIR 环境变量 > 用户配置 [__shr] project_dir > 默认 ".shr"。
 func EffectiveProjectDir(userRaw map[string]interface{}) string {
-	if v := os.Getenv("SHR_PROJECT_DIR"); v != "" && validProjectDir(v) {
+	if v := os.Getenv("SHR_PROJECT_DIR"); v != "" && ValidProjectDir(v) {
 		return v
 	}
 	if m, ok := userRaw[metaKey].(map[string]interface{}); ok {
-		if v, ok := m["project_dir"].(string); ok && validProjectDir(v) {
+		if v, ok := m["project_dir"].(string); ok && ValidProjectDir(v) {
 			return v
 		}
 	}
-	return defaultProjectDir
+	return DefaultProjectDir
 }
 
-// FindProjectRoot 从 startDir 向上查找"项目根"：就近判定，同一目录内按序检查
-//  1. <dir>/<projDir>/rules.toml 是文件；或
-//  2. <dir>/<projDir> 是目录（手动创建了 `.shr/` 等）；或
-//  3. <dir>/.git 存在（git 仓库/工作树，.git 可为目录或文件）。
+// FindProjectRoot 从 startDir 向上查找"项目根"，就近判定。每个祖先目录按序检查：
+//  1. 中央注册表 ~/.shr/projects.toml：以该目录绝对路径为 key 命中（value 为该项目的
+//     规则子目录）——显式注册优先，无论规则文件是否已存在都取注册位置；或
+//  2. <dir>/.shr-dir 标记文件（旧兼容，内容首行为该项目专属的规则子目录）；或
+//  3. <dir>/<projDir>/rules.toml 是文件；或
+//  4. <dir>/<projDir> 是目录（手动创建了 `.shr/` 等）；或
+//  5. <dir>/.git 存在（git 仓库/工作树，.git 可为目录或文件）。
 //
-// 返回（项目根目录, <root>/<projDir>/rules.toml）—— 规则文件可能尚不存在
+// 返回（项目根目录, <root>/<规则目录>/rules.toml）—— 规则文件可能尚不存在
 // （如仅以 .git 作为项目标记时），写类命令会按需创建。找不到返回 ("", "")。
 func FindProjectRoot(startDir, projDir string) (root, rulesPath string) {
 	if startDir == "" {
 		startDir, _ = os.Getwd()
 	}
 	if projDir == "" {
-		projDir = defaultProjectDir
+		projDir = DefaultProjectDir
 	}
 	dir := startDir
 	if abs, err := filepath.Abs(dir); err == nil {
 		dir = abs
 	}
+	reg, _ := loadProjectReg()
 	for {
+		// 1) 中央注册表：pwd 逐级向上匹配项目根 key
+		if d, ok := reg[dir]; ok && ValidProjectDir(d) {
+			return dir, filepath.Join(dir, filepath.FromSlash(d), "rules.toml")
+		}
+		// 2) 旧兼容：<dir>/.shr-dir 标记
+		if d, ok := readProjectLoc(dir); ok {
+			mp := filepath.Join(dir, filepath.FromSlash(d), "rules.toml")
+			return dir, mp
+		}
 		p := filepath.Join(dir, filepath.FromSlash(projDir), "rules.toml")
 		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
 			return dir, p
@@ -377,6 +394,118 @@ func FindProjectRoot(startDir, projDir string) (root, rulesPath string) {
 		}
 		dir = parent
 	}
+}
+
+// ---- 中央注册表 ~/.shr/projects.toml ----
+//
+// 集中管理"哪个项目用哪个规则子目录"，无需在项目根放标记文件：
+//
+//	["/abs/path/to/projA"]
+//	dir = ".vscode/shr"
+//
+//	["/abs/path/to/projB"]
+//	dir = ".shr"
+
+func projectRegPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".shr", "projects.toml")
+}
+
+func loadProjectReg() (map[string]string, error) {
+	data, err := os.ReadFile(projectRegPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]string{}, nil
+		}
+		return nil, err
+	}
+	var raw map[string]map[string]interface{}
+	if err := toml.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("解析 %s 失败: %w", projectRegPath(), err)
+	}
+	reg := map[string]string{}
+	for root, m := range raw {
+		if d, ok := m["dir"].(string); ok && ValidProjectDir(d) {
+			reg[root] = d
+		}
+	}
+	return reg, nil
+}
+
+func saveProjectReg(reg map[string]string) error {
+	m := map[string]interface{}{}
+	for root, d := range reg {
+		m[root] = map[string]interface{}{"dir": d}
+	}
+	var buf bytes.Buffer
+	buf.WriteString("# shr 项目规则位置注册表（~/.shr/projects.toml）\n")
+	buf.WriteString("# key = 项目根绝对路径，dir = 该项目的规则子目录（相对项目根）。\n")
+	if err := toml.NewEncoder(&buf).Encode(m); err != nil {
+		return err
+	}
+	p := projectRegPath()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(p, buf.Bytes(), 0o644)
+}
+
+// GetProjectReg 查询某项目根的注册规则目录（未注册返回 ("", false)）。
+func GetProjectReg(root string) (string, bool) {
+	reg, err := loadProjectReg()
+	if err != nil {
+		return "", false
+	}
+	d, ok := reg[root]
+	return d, ok
+}
+
+// SetProjectReg 注册/更新某项目根的规则子目录（写 ~/.shr/projects.toml）。
+func SetProjectReg(root, dir string) error {
+	reg, err := loadProjectReg()
+	if err != nil {
+		return err
+	}
+	reg[root] = dir
+	return saveProjectReg(reg)
+}
+
+// UnsetProjectReg 删除某项目根的注册；未注册时不做任何事。
+func UnsetProjectReg(root string) error {
+	reg, err := loadProjectReg()
+	if err != nil {
+		return err
+	}
+	if _, ok := reg[root]; !ok {
+		return nil
+	}
+	delete(reg, root)
+	return saveProjectReg(reg)
+}
+
+// readProjectLoc 读取 <dir>/.shr-dir 标记：取首个非空、非 # 注释、合法的行作为
+// 该项目专属的规则子目录名；标记缺失或内容非法返回 ("", false)。
+func readProjectLoc(dir string) (string, bool) {
+	data, err := os.ReadFile(filepath.Join(dir, ".shr-dir"))
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(strings.TrimRight(line, "/"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if ValidProjectDir(line) {
+			return line, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// ReadProjectLoc 供 CLI 展示项目专属规则目录标记（<root>/.shr-dir）。
+func ReadProjectLoc(root string) (string, bool) {
+	return readProjectLoc(root)
 }
 
 // MergeConfigs 合并用户级与项目级配置：同名键项目级优先，子表递归合并。
@@ -457,12 +586,14 @@ func mergeAliases(user, proj map[string][]string) map[string][]string {
 	return out
 }
 
-func validProjectDir(dir string) bool {
+// ValidProjectDir 校验项目配置子目录名：必须是相对路径（非绝对路径），
+// 不含 "." / ".." / 空段 / 空白（如 ../x、/abs、.shr/..、"a b" 均非法）。
+func ValidProjectDir(dir string) bool {
 	if dir == "" || filepath.IsAbs(dir) {
 		return false
 	}
-	for _, seg := range strings.FieldsFunc(filepath.ToSlash(dir), func(r rune) bool { return r == '/' }) {
-		if seg == "" || seg == "." || seg == ".." {
+	for _, seg := range strings.Split(filepath.ToSlash(dir), "/") {
+		if seg == "" || seg == "." || seg == ".." || strings.ContainsAny(seg, " \t~") {
 			return false
 		}
 	}

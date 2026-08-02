@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,51 +21,10 @@ var (
 	Date    = "unknown"
 )
 
-const usageText = `shr — shell command shortener: rewrite commands by rules before execution
-
-Usage:
-  shr init [zsh|bash|project]             print shell integration code (eval "$(shr init zsh)");
-                                          'project' scaffolds <project_dir>/rules.toml in current dir
-  shr setup                               interactive setup wizard (TUI, writes rc)
-  shr add <cmd> <path...> <expansion>     register a rule (3+ args: subcommand abbrev)
-  shr add <abbr> <target>                 register a top-level command alias (2 args)
-  shr remove <cmd> <path...>              remove a rule or namespace (2+ args)
-  shr remove <abbr>                       remove a top-level alias (1 arg)
-  shr list                                show all rules as a tree
-  shr expand <argv...>                    show what a command expands to
-  shr doctor                              check rules for conflicts
-  shr path                                print user rules path; project rules path if inside a project
-  shr on | shr off [--global]             enable/disable rewriting (use --global to target user-level)
-  shr status                              show whether rewriting is enabled
-  shr dup on|off [--global]               allow/disallow multi-value abbrevs (default on)
-  shr update [version] [--check]          self-update from GitHub Releases
-  shr version                             print version
-
-Project-level rules:
-  git 仓库（或含 .shr 目录）即视为项目：<项目根>/<project_dir>/rules.toml
-  与用户级规则合并（同名键项目级优先，目录名可用 SHR_PROJECT_DIR 或用户配置
-  [__shr] project_dir 自定义，如 .vscode/shr）。shr add/remove 等默认写项目文件
-  （按需创建），--global 写用户级文件。
-
-Examples:
-  shr add git co checkout               # git co        → git checkout
-  shr add git lg "log --oneline --graph"
-  shr add colink data u upload          # colink data u → colink data upload
-  shr add colink d data                 # colink d u    → colink data upload (drill-through)
-  shr add git b+ branch                 # git b / br / bra / bran / branc → git branch (prefix)
-  shr add git p pull                    # git p → git pull
-  shr add git p push                    # git p → git pull | push (runtime TUI pick when dup on)
-  shr add c clear                       # c → clear (参数透传, 2-arg alias)
-  shr add g git                         # g → git (继续下钻 git 规则树)
-  shr add c+ clear                      # c / cl / cle / clea → clear (prefix)
-
-Setup:  shr setup   # interactive wizard (recommended), or: echo 'eval "$(shr init zsh)"' >> ~/.zshrc
-`
-
 // Run 执行 CLI，返回进程退出码。
 func Run(args []string) int {
 	if len(args) < 2 {
-		fmt.Print(usageText)
+		fmt.Print(helpText.Usage)
 		return 2
 	}
 	switch args[1] {
@@ -88,6 +48,8 @@ func Run(args []string) int {
 		return cmdPick(args[2:])
 	case "path":
 		return cmdPath()
+	case "config":
+		return cmdConfig(args[2:])
 	case "on", "enable":
 		return cmdToggle(args[2:], true)
 	case "off", "disable":
@@ -102,7 +64,7 @@ func Run(args []string) int {
 		fmt.Printf("shr %s (commit %s, built %s)\n", Version, Commit, Date)
 		return 0
 	case "help", "-h", "--help":
-		fmt.Print(usageText)
+		fmt.Print(helpText.Usage)
 		return 0
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q (see: shr help)\n", args[1])
@@ -148,39 +110,21 @@ func printScopeTarget(scope *core.Scope, global bool) {
 	}
 }
 
-const initTTYHintTpl = `shr: 'init' prints shell code that must be evaluated into your shell.
-
-You ran it directly — the code was NOT loaded. Enable shr with one of:
-
-  shr setup                                  # interactive wizard (writes rc, recommended)
-  eval "$(shr init %[1]s)"                   # load for the current shell only
-  echo 'eval "$(shr init %[1]s)"' >> ~/%[2]s # or append manually (then: source ~/%[2]s)
-
-To just inspect the generated code without loading, pipe it:
-
-  shr init %[1]s | less
-  shr init %[1]s > /tmp/shr-init.sh
-`
-
 func cmdInit(args []string) int {
-	shell := ""
-	for _, a := range args {
-		if a == "project" {
-			return cmdInitProject()
-		}
-		if strings.HasPrefix(a, "-") && a != "-" {
-			fmt.Fprintf(os.Stderr, "shr init: unknown flag %q (see: shr help)\n", a)
-			return 2
-		}
-		if shell == "" {
-			shell = a
-		} else {
-			fmt.Fprintf(os.Stderr, "shr init: unexpected argument %q\n", a)
-			return 2
-		}
+	if len(args) == 0 {
+		return cmdInitGuided()
 	}
-	if shell == "" {
-		shell = filepath.Base(os.Getenv("SHELL"))
+	if args[0] == "project" {
+		return cmdInitProject(args[1:])
+	}
+	shell := args[0]
+	if strings.HasPrefix(shell, "-") {
+		fmt.Fprintf(os.Stderr, helpText.InitUnknown, shell)
+		return 2
+	}
+	if len(args) > 1 {
+		fmt.Fprintf(os.Stderr, helpText.InitUnexpected, args[1])
+		return 2
 	}
 
 	scope := loadScopeOrDie()
@@ -194,35 +138,95 @@ func cmdInit(args []string) int {
 	// 引导；真正要查看代码请用管道（如 | less），管道场景下 stdout 非终端，
 	// 仍原样输出代码供 eval / 重定向使用。
 	if isTerminal(os.Stdout) {
-		fmt.Fprintf(os.Stderr, initTTYHintTpl, shell, rcFile(shell))
+		fmt.Fprintf(os.Stderr, helpText.InitTTYHint, shell, rcFile(shell))
 		return 1
 	}
 	fmt.Print(code)
 	return 0
 }
 
-// cmdInitProject 在当前目录生成一份项目级规则文件 <project_dir>/rules.toml，
-// 之后在项目内的 shr add/remove 默认写到这里。
-func cmdInitProject() int {
+// cmdInitGuided 无参 `shr init`：在当前项目中引导式配置项目规则目录
+// （写入 ~/.shr/projects.toml 注册表并创建规则文件）。
+func cmdInitGuided() int {
+	if !isTerminal(os.Stdin) {
+		fmt.Fprintln(os.Stderr, "shr init:", helpText.InitNonTTY)
+		return 1
+	}
 	scope := loadScopeOrDie()
-	p := filepath.Join(scope.CWD, filepath.FromSlash(scope.ProjectDir), "rules.toml")
+	if scope.ProjectRoot == "" {
+		fmt.Fprintln(os.Stderr, "shr init:", helpText.InitNoProject)
+		return 1
+	}
+	cur := scope.ProjectDir
+	if d, ok := core.GetProjectReg(scope.ProjectRoot); ok {
+		cur = d
+	}
+	fmt.Printf("项目根: %s\n", scope.ProjectRoot)
+	if scope.HasProjectFile {
+		fmt.Printf("项目规则文件（已存在）: %s\n", scope.ProjectPath)
+	}
+	fmt.Printf("当前规则目录: %s\n", cur)
+	fmt.Print("输入项目规则子目录（回车用默认 .shr，如 .vscode/shr）: ")
+	reader := bufio.NewReader(os.Stdin)
+	line, _ := reader.ReadString('\n')
+	dir := strings.TrimSpace(strings.TrimRight(line, "/"))
+	if dir == "" {
+		dir = core.DefaultProjectDir
+	}
+	if !core.ValidProjectDir(dir) {
+		fmt.Fprintf(os.Stderr, "shr: 非法项目目录 %q（需为相对路径，且不含 . / .. 段或空白）\n", line)
+		return 1
+	}
+	if err := core.SetProjectReg(scope.ProjectRoot, dir); err != nil {
+		fmt.Fprintln(os.Stderr, "shr:", err)
+		return 1
+	}
+	p := filepath.Join(scope.ProjectRoot, filepath.FromSlash(dir), "rules.toml")
+	if err := writeProjectRulesFile(p); err != nil {
+		fmt.Fprintln(os.Stderr, "shr:", err)
+		return 1
+	}
+	fmt.Printf("已注册项目规则目录: %s\n", dir)
+	fmt.Printf("项目规则文件: %s\n", p)
+	fmt.Println("接下来：")
+	fmt.Println("  shr add git co checkout             # 项目级规则（默认）")
+	fmt.Println("  shr add git lg \"log --oneline\" -g   # 全局规则")
+	return 0
+}
+
+// cmdInitProject 在当前项目生成一份项目级规则文件（非交互），
+// 位置取注册表/全局默认/探测结果；之后项目内的 shr add 默认写到这里。
+func cmdInitProject(args []string) int {
+	if len(args) > 0 {
+		fmt.Fprintln(os.Stderr, helpText.InitProject)
+		return 2
+	}
+	scope := loadScopeOrDie()
+	p := scope.ProjectPath
+	if p == "" {
+		p = filepath.Join(scope.CWD, filepath.FromSlash(scope.ProjectDir), "rules.toml")
+	}
 	if _, err := os.Stat(p); err == nil {
 		fmt.Println("exists: " + p)
 		return 0
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		fmt.Fprintln(os.Stderr, "shr:", err)
-		return 1
-	}
-	const content = "# shr 项目级规则：只在本项目目录树下生效，与用户级规则（~/.config/shr/rules.toml）合并，\n" +
-		"# 同名键以项目级优先；项目内执行 shr add/remove 会写到这里（--global 写用户级）。\n" +
-		"#\n# 示例：\n# [git]\n# co = \"checkout\"\n"
-	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+	if err := writeProjectRulesFile(p); err != nil {
 		fmt.Fprintln(os.Stderr, "shr:", err)
 		return 1
 	}
 	fmt.Println("created: " + p)
 	return 0
+}
+
+const projectRulesTemplate = "# shr 项目级规则：只在本项目目录树下生效，与用户级规则（~/.config/shr/rules.toml）合并，\n" +
+	"# 同名键以项目级优先；项目内执行 shr add 会写到这里（-g 写用户级）。\n" +
+	"#\n# 示例：\n# [git]\n# co = \"checkout\"\n"
+
+func writeProjectRulesFile(p string) error {
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(p, []byte(projectRulesTemplate), 0o644)
 }
 
 // rcFile 返回 shell 对应的 rc 文件名（用于 init 引导提示）。
@@ -250,6 +254,13 @@ func cmdAdd(args []string) int {
 		cfg = scope.UserConfig
 	}
 
+	// 项目内但尚无规则文件 → 引导先 shr init，避免用户误以为规则已写入项目
+	if !global && scope.ProjectRoot != "" && !scope.HasProjectFile {
+		fmt.Fprintf(os.Stderr, "shr: 当前项目还没有规则文件（%s）\n", scope.ProjectPath)
+		fmt.Fprintln(os.Stderr, "    "+helpText.ProjectNotInit)
+		return 1
+	}
+
 	// 两参数：一级命令名缩写（argv[0] → target），无子命令路径
 	if len(args) == 2 {
 		abbr, target := args[0], args[1]
@@ -271,7 +282,7 @@ func cmdAdd(args []string) int {
 		return 0
 	}
 	if len(args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: shr add <cmd> <path...> <expansion>  |  shr add <abbr> <target>")
+		fmt.Fprintln(os.Stderr, helpText.Add)
 		return 2
 	}
 	cmd := args[0]
@@ -312,7 +323,7 @@ func addVerb(status core.AddStatus) string {
 func cmdRemove(args []string) int {
 	global, args := parseGlobalFlag(args)
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: shr remove <cmd> <path...>  |  shr remove <abbr>")
+		fmt.Fprintln(os.Stderr, helpText.Remove)
 		return 2
 	}
 	scope := loadScopeOrDie()
@@ -413,7 +424,7 @@ func printNode(n *core.Node, pad string) {
 
 func cmdExpand(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: shr expand <argv...>")
+		fmt.Fprintln(os.Stderr, helpText.Expand)
 		return 2
 	}
 	scope := loadScopeOrDie()
@@ -439,11 +450,11 @@ func cmdDoctor() int {
 
 func cmdGen(args []string) int {
 	if len(args) != 1 || args[0] != "posix" {
-		fmt.Fprintln(os.Stderr, "usage: shr _gen posix")
+		fmt.Fprintln(os.Stderr, helpText.Gen)
 		return 2
 	}
 	scope := loadScopeOrDie()
-	fmt.Print(scope.Merged.GenPosixFuncsFor(scope.ProjectDir))
+	fmt.Print(scope.Merged.GenPosixFuncsFor(scope.ProjectPath))
 	return 0
 }
 
@@ -540,6 +551,130 @@ func cmdPath() int {
 	if scope, err := core.LoadScoped(""); err == nil && scope.ProjectPath != "" {
 		fmt.Println("project: " + scope.ProjectPath)
 	}
+	return 0
+}
+
+// cmdConfig 查看/设置 shr 配置：
+//
+//	shr config set-path <dir> [-g]     设置规则存放目录：默认当前项目（注册到
+//	                                  ~/.shr/projects.toml）；-g 写全局默认（用户配置
+//	                                  [__shr].project_dir），如 .vscode 或 .vscode/shr
+//	shr config get-path                 显示当前生效的规则目录及来源、规则文件路径
+//	shr config unset-path [-g]          删除当前项目注册（-g：删除全局默认）
+func cmdConfig(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, helpText.Config)
+		return 2
+	}
+	switch args[0] {
+	case "set-path":
+		return cmdConfigSetPath(args[1:])
+	case "get-path":
+		return cmdConfigGetPath(args[1:])
+	case "unset-path":
+		return cmdConfigUnsetPath(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "shr config: unknown subcommand %q (see: shr help)\n", args[0])
+		return 2
+	}
+}
+
+func cmdConfigSetPath(args []string) int {
+	global, dirs := parseGlobalFlag(args)
+	if len(dirs) != 1 {
+		fmt.Fprintln(os.Stderr, helpText.ConfigSet)
+		return 2
+	}
+	dir := strings.TrimRight(dirs[0], "/")
+	if !core.ValidProjectDir(dir) {
+		fmt.Fprintf(os.Stderr, "shr: 非法项目目录 %q（需为相对路径，且不含 . / .. 段或空白）\n", dirs[0])
+		return 1
+	}
+	scope := loadScopeOrDie()
+	if global {
+		scope.UserConfig.ProjectDir = dir
+		if err := scope.SaveGlobal(); err != nil {
+			fmt.Fprintln(os.Stderr, "shr:", err)
+			return 1
+		}
+		fmt.Printf("shr: 全局规则目录设为 %q (%s)\n", dir, scope.UserPath)
+		if v := os.Getenv("SHR_PROJECT_DIR"); v != "" {
+			fmt.Printf("shr: note: $SHR_PROJECT_DIR=%q 优先级更高（env > 用户配置），此刻生效值仍为 %q\n", v, v)
+		}
+		return 0
+	}
+	if scope.ProjectRoot == "" {
+		fmt.Fprintln(os.Stderr, "shr: 当前目录不在项目中（需要 .git / project_dir 目录 / 注册表条目）")
+		fmt.Fprintln(os.Stderr, "        可用: shr config set-path <dir> -g   设置全局默认")
+		return 1
+	}
+	if err := core.SetProjectReg(scope.ProjectRoot, dir); err != nil {
+		fmt.Fprintln(os.Stderr, "shr:", err)
+		return 1
+	}
+	fmt.Printf("shr: 当前项目规则目录设为 %q (%s，注册于 ~/.shr/projects.toml)\n",
+		dir, filepath.Join(scope.ProjectRoot, filepath.FromSlash(dir), "rules.toml"))
+	fmt.Println("       用 shr init 可引导式创建规则文件；或直接 shr add 写规则（需先有规则文件）")
+	return 0
+}
+
+func cmdConfigGetPath(args []string) int {
+	if len(args) > 0 {
+		fmt.Fprintln(os.Stderr, helpText.ConfigGet)
+		return 2
+	}
+	scope := loadScopeOrDie()
+	if scope.ProjectRoot != "" {
+		if d, ok := core.GetProjectReg(scope.ProjectRoot); ok {
+			fmt.Printf("project: %s\n", d)
+			fmt.Printf("root:    %s\n", scope.ProjectRoot)
+		} else {
+			fmt.Printf("project: %s (uses global)\n", scope.ProjectDir)
+			fmt.Printf("root:    %s\n", scope.ProjectRoot)
+		}
+	} else {
+		fmt.Printf("project: (not in a project)\n")
+		fmt.Printf("global:  %s\n", scope.ProjectDir)
+	}
+	switch {
+	case os.Getenv("SHR_PROJECT_DIR") != "":
+		fmt.Println("source:  $SHR_PROJECT_DIR")
+	case scope.UserConfig.ProjectDir != "":
+		fmt.Println("source:  " + scope.UserPath + " [__shr].project_dir")
+	default:
+		fmt.Println("source:  default .shr")
+	}
+	if scope.ProjectPath != "" {
+		fmt.Println("rules:   " + scope.ProjectPath)
+	}
+	return 0
+}
+
+func cmdConfigUnsetPath(args []string) int {
+	global, rest := parseGlobalFlag(args)
+	if len(rest) > 0 {
+		fmt.Fprintln(os.Stderr, helpText.ConfigUnset)
+		return 2
+	}
+	scope := loadScopeOrDie()
+	if global {
+		scope.UserConfig.ProjectDir = ""
+		if err := scope.SaveGlobal(); err != nil {
+			fmt.Fprintln(os.Stderr, "shr:", err)
+			return 1
+		}
+		fmt.Println("shr: 全局规则目录已恢复默认 (.shr)")
+		return 0
+	}
+	if scope.ProjectRoot == "" {
+		fmt.Fprintln(os.Stderr, "shr: 当前目录不在项目中")
+		return 1
+	}
+	if err := core.UnsetProjectReg(scope.ProjectRoot); err != nil {
+		fmt.Fprintln(os.Stderr, "shr:", err)
+		return 1
+	}
+	fmt.Printf("shr: 当前项目注册已删除，回退全局规则目录 %q\n", scope.ProjectDir)
 	return 0
 }
 

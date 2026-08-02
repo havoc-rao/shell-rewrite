@@ -22,7 +22,7 @@ import (
 // cmdPick 实现 `shr _pick <label> <cand...>`：TUI 选择器，选中值输出到 stdout。
 func cmdPick(args []string) int {
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: shr _pick <label> <cand...>")
+		fmt.Fprintln(os.Stderr, helpText.Pick)
 		return 2
 	}
 	label := args[0]

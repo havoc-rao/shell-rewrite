@@ -142,9 +142,8 @@ g = "git"                             # g → git（下钻 [git] 规则树）
 project_dir = ".vscode/shr"           # 可选：自定义项目级配置子目录（默认 .shr）
 ```
 
-**项目级**：项目根目录下的 `<项目根>/<project_dir>/rules.toml`（默认 `.shr`，可用环境变量
-`SHR_PROJECT_DIR` 或用户配置的 `[__shr] project_dir` 自定义，如 `.vscode/shr`），
-只在该项目树下生效，适合团队/单项目共享的习惯缩写：
+**项目级**：项目根目录下的 `<项目根>/<规则目录>/rules.toml`，只在该项目树下生效，
+适合团队/单项目共享的习惯缩写：
 
 ```toml
 # <项目根>/.shr/rules.toml —— 在项目内 `shr add/remove` 默认写到这里
@@ -152,18 +151,31 @@ project_dir = ".vscode/shr"           # 可选：自定义项目级配置子目�
 co = "commit"          # 项目级优先：项目内 git co → git commit（覆盖用户级 checkout）
 ```
 
+**规则目录（存放位置）** 有三个来源，优先级从高到低：
+- **项目专属注册表** `~/.shr/projects.toml`：按项目根记录每个项目自己的规则子目录
+  （如 `.vscode/shr`），只影响该项目——`shr config set-path <dir>` 注册/`get-path` 查看/
+  `unset-path` 删除，不同项目可各自不同，无需在项目根放任何文件；
+- **环境变量** `SHR_PROJECT_DIR`（如 `.vscode/shr`）；
+- **用户配置** `[__shr] project_dir`（`shr config set-path <dir> -g` 写入；`unset-path -g` 恢复默认）。
+
+默认 `.shr`。`shr config get-path` 可查看生效值、来源及规则文件路径。
+
 **项目根判定**（就近向上查找）：任一祖先目录满足以下任一条即为项目——
-① 存在 `<project_dir>/rules.toml` 文件；② 存在 `<project_dir>` 目录；③ 存在 `.git`
-（git 仓库/工作树）。因此**在 git 仓库内 `shr add` 默认就写 `<仓库根>/<project_dir>/rules.toml`**
-（按需自动创建），不用先建目录或配置文件。
+① 注册表以该目录为 key 命中（显式指定该项目规则位置，优先级最高）；② 存在
+`<规则目录>/rules.toml` 文件；③ 存在 `<规则目录>` 目录；④ 存在 `.git`
+（git 仓库/工作树）。
+
+**项目内首次使用**：`shr add` 默认写项目规则文件；若当前项目还没有规则文件
+（`<规则目录>/rules.toml` 不存在），会提示先运行 `shr init`（引导式配置规则目录并
+建文件）或 `shr config set-path <dir>`，需要全局规则时用 `shr add ... -g`。
 
 规则在生成 wrapper 时**合并**：同名键项目级优先，其余继承用户级（`[__shr].enabled` /
 `allow_duplicates` 也按此规则，项目可设 `enabled = false` 关闭整个项目的复写）。
 `shr list` / `shr expand` / `shr doctor` 展示的都是合并后的视图；`shr path` 会同时打印
-用户级与项目级路径；`shr init project` 可在当前目录生成一个空项目规则文件。
+用户级与项目级路径。
 
-写类命令默认写入项目文件（`--global` 强制写用户级）：
-全局规则 → `shr add --global git co checkout`；项目规则 → 在项目内直接 `shr add git co commit`。
+写类命令默认写入项目文件（`-g` 强制写用户级）：
+全局规则 → `shr add -g git co checkout`；项目规则 → 在项目内直接 `shr add git co commit`。
 项目变动（编辑、新建、cd 进出）都会在下一个提示符前自动重载，无需重启 shell。
 
 配置均可手工编辑，之后运行 `shr doctor` 校验。
@@ -196,18 +208,22 @@ colink() {
 
 | 命令 | 说明 |
 |---|---|
-| `shr init [zsh\|bash\|project]` | 输出 shell 集成代码（默认按 `$SHELL` 探测）；`project` 在当前目录生成项目级规则文件 `<project_dir>/rules.toml` |
-| `shr setup` | 交互式配置向导（TUI，自动探测 shell 与 PATH） |
-| `shr setup --yes` | 非交互应用（脚本/CI）；`--uninstall` 移除 |
-| `shr add <cmd> <path...> <expansion>` | 注册规则（3+ 参数：子命令缩写）；2 参数时为一级命令名缩写（`add c clear`）；`--global` 写用户级 |
-| `shr remove <cmd> <path...>` | 删除规则或命名空间（2+ 参数）；1 参数删一级命令名缩写；`--global` 同上 |
+| `shr init` | 在当前项目内引导式配置规则目录（注册表 + 创建规则文件） |
+| `shr init [zsh\|bash]` | 输出 shell 集成代码（供 `eval "$(shr init zsh)"`） |
+| `shr init project` | 非交互：按当前生效位置创建项目级规则文件 |
+| `shr setup` | 交互式配置向导（TUI，自动探测 shell 与 PATH）；`--yes` 非交互；`--uninstall` 移除 |
+| `shr add <cmd> <path...> <expansion>` | 注册规则（3+ 参数：子命令缩写）；2 参数时为一级命令名缩写（`add c clear`）；默认写项目文件，项目无规则文件时提示先 `shr init`；`-g` 写用户级 |
+| `shr remove <cmd> <path...>` | 删除规则或命名空间（2+ 参数）；1 参数删一级命令名缩写；`-g` 同上 |
 | `shr list` | 树形列出合并后的全部规则 |
 | `shr expand <argv...>` | 显示命令行的展开结果 |
 | `shr doctor` | 校验规则冲突 |
 | `shr path` | 打印用户级路径（项目内会附带打印项目级路径） |
-| `shr on` / `shr off` | 开启/关闭复写（关闭后 wrapper 退化为透传，下一个提示符生效）；`--global` 写用户级 |
+| `shr config set-path <dir> [-g]` | 设置规则存放目录：默认当前项目（注册到 `~/.shr/projects.toml`）；`-g` 设全局默认（用户配置 `[__shr].project_dir`） |
+| `shr config get-path` | 查看生效的规则目录、来源与规则文件路径 |
+| `shr config unset-path [-g]` | 删除当前项目注册（`-g`：清除全局默认） |
+| `shr on` / `shr off` | 开启/关闭复写（关闭后 wrapper 退化为透传，下一个提示符生效）；`-g` 写用户级 |
 | `shr status` | 查看复写开关状态（合并视图） |
-| `shr dup on\|off` | 允许/禁止多值缩写；`--global` 写用户级 |
+| `shr dup on\|off` | 允许/禁止多值缩写；`-g` 写用户级 |
 | `shr update [version] [--check]` | 从 GitHub Releases 自更新到最新（或指定）版本 |
 
 ## 路线图

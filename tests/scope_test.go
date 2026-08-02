@@ -87,6 +87,108 @@ func TestScopeProjectOverridesUser(t *testing.T) {
 	}
 }
 
+func TestValidProjectDir(t *testing.T) {
+	valid := []string{".shr", ".vscode", ".vscode/shr", "config/shr", "a.b/c"}
+	invalid := []string{"", ".", "..", "../x", "/abs", ".vscode/", "a/../b", "a//b", "~/x", "a b"}
+	for _, d := range valid {
+		if !core.ValidProjectDir(d) {
+			t.Errorf("ValidProjectDir(%q) = false, want true", d)
+		}
+	}
+	for _, d := range invalid {
+		if core.ValidProjectDir(d) {
+			t.Errorf("ValidProjectDir(%q) = true, want false", d)
+		}
+	}
+}
+
+func TestFindProjectRootViaMarkerFile(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "repo")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 项目专属标记：规则子目录为 .vscode/shr（即使规则文件尚未存在，也按标记定位）
+	if err := os.WriteFile(filepath.Join(proj, ".shr-dir"), []byte(".vscode/shr\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootGot, pathGot := core.FindProjectRoot(filepath.Join(proj, "sub"), ".shr")
+	want := filepath.Join(proj, ".vscode", "shr", "rules.toml")
+	if rootGot != proj || pathGot != want {
+		t.Fatalf("marker should set project loc: got (%q, %q), want (%q, %q)", rootGot, pathGot, proj, want)
+	}
+	// 标记优先于默认位置：即使默认 .shr/rules.toml 存在，也用标记位置
+	if err := os.WriteFile(filepath.Join(proj, ".shr", "rules.toml"), []byte("[x]\n"), 0o644); err == nil {
+		if _, pathGot2 := core.FindProjectRoot(proj, ".shr"); pathGot2 != want {
+			t.Fatalf("marker should win over default rules: got %q, want %q", pathGot2, want)
+		}
+	}
+}
+
+func TestReadProjectLoc(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, ".shr-dir")
+	if _, ok := core.ReadProjectLoc(root); ok {
+		t.Fatal("no marker should return false")
+	}
+	if err := os.WriteFile(file, []byte("# 注释\n\n.vscode/shr\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loc, ok := core.ReadProjectLoc(root)
+	if !ok || loc != ".vscode/shr" {
+		t.Fatalf("ReadProjectLoc = (%q, %v), want (.vscode/shr, true)", loc, ok)
+	}
+	// 非法内容 → false
+	if err := os.WriteFile(file, []byte("../esc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := core.ReadProjectLoc(root); ok {
+		t.Fatal("invalid marker content should be ignored")
+	}
+}
+
+func TestProjectRegSetFindUnset(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // 隔离注册表 ~/.shr/projects.toml
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := core.SetProjectReg(repo, ".vscode/shr"); err != nil {
+		t.Fatal(err)
+	}
+	// 仅注册表即可识别项目（无需 .git / 目录标记），且从子目录向上能命中
+	rootGot, pathGot := core.FindProjectRoot(filepath.Join(repo, "sub", "deep"), ".shr")
+	want := filepath.Join(repo, ".vscode", "shr", "rules.toml")
+	if rootGot != repo || pathGot != want {
+		t.Fatalf("registry should locate project: got (%q, %q), want (%q, %q)", rootGot, pathGot, repo, want)
+	}
+	if d, ok := core.GetProjectReg(repo); !ok || d != ".vscode/shr" {
+		t.Fatalf("GetProjectReg = (%q, %v), want (.vscode/shr, true)", d, ok)
+	}
+	// 注册表文件确实落在 ~/.shr/projects.toml
+	if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".shr", "projects.toml")); err != nil {
+		t.Fatalf("registry file missing: %v", err)
+	}
+	// 更新
+	if err := core.SetProjectReg(repo, "config/shr"); err != nil {
+		t.Fatal(err)
+	}
+	if _, p := core.FindProjectRoot(repo, ".shr"); p != filepath.Join(repo, "config", "shr", "rules.toml") {
+		t.Fatalf("updated registry not applied: %s", p)
+	}
+	// 删除注册 → 无 .git 无标记的裸目录不再是项目
+	if err := core.UnsetProjectReg(repo); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := core.GetProjectReg(repo); ok {
+		t.Fatal("should be unregistered")
+	}
+	if _, p := core.FindProjectRoot(repo, ".shr"); p != "" {
+		t.Fatalf("unregistered bare dir should not be a project: %s", p)
+	}
+}
+
 func TestScopeGitRepoDefaultsToProjectTarget(t *testing.T) {
 	base := t.TempDir()
 	userFile := filepath.Join(base, "rules.toml")
@@ -105,11 +207,28 @@ func TestScopeGitRepoDefaultsToProjectTarget(t *testing.T) {
 	if scope.ProjectPath == "" {
 		t.Fatal("git repo should be detected as a project")
 	}
+	if scope.HasProjectFile {
+		t.Fatal("project rules file should not exist yet")
+	}
 	if scope.TargetConfig != scope.ProjectConfig || scope.TargetPath != scope.ProjectPath {
 		t.Fatalf("default write target should be the project: target=%s", scope.TargetPath)
 	}
 	if got := strings.Join(scope.Merged.Expand([]string{"git", "co"}), " "); got != "git checkout" {
 		t.Fatalf("merged view should keep user rules: %q", got)
+	}
+	// 创建规则文件后 HasProjectFile 为 true
+	if err := os.MkdirAll(filepath.Dir(scope.ProjectPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(scope.ProjectPath, []byte("[git]\nco = \"checkout\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scope2, err := core.LoadScopedAt(filepath.Join(repo, "sub", "deep"), userFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !scope2.HasProjectFile {
+		t.Fatal("HasProjectFile should be true after creating the file")
 	}
 }
 

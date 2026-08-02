@@ -20,7 +20,7 @@ func (c *Config) GenInit(shell, userPath, projPath string) (string, error) {
 		}
 		b.WriteString("# note: existing aliases take precedence over functions — unalias if needed.\n\n")
 		b.WriteString(posixPrelude)
-		b.WriteString(c.genPosixFuncs(""))
+		b.WriteString(c.genPosixFuncs(projPath))
 		b.WriteString(posixReloadFunc)
 		if shell == "zsh" {
 			b.WriteString(zshHook)
@@ -50,32 +50,19 @@ _shr_pick() {
 `
 
 const posixPrelude = `_SHR_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/shr/rules.toml"
-# 项目级规则子目录名：默认 .shr，可用 SHR_PROJECT_DIR 环境变量或用户配置
-# [__shr] project_dir 自定义（如 .vscode）；每次热加载（_gen posix）按生效值重写。
-_SHR_PROJECT_DIR="${SHR_PROJECT_DIR:-.shr}"
+# 当前目录的项目规则文件路径：由 shr 按当前目录计算（注册表/默认探测），
+# 每次热加载（_gen posix）重写；空串 = 无项目规则。
+_SHR_PROJECT_PATH=''
 
-# 从 $PWD 向上查找最近的 <项目根>/$_SHR_PROJECT_DIR/rules.toml
-_shr_project_config() {
-  local dir="$PWD" f
-  while :; do
-    f="$dir/$_SHR_PROJECT_DIR/rules.toml"
-    if [ -f "$f" ]; then printf '%s\n' "$f"; return 0; fi
-    [ "$dir" = "/" ] && break
-    case "$dir" in
-      /*/*) dir="${dir%/*}" ;;
-      /*) dir="/" ;;
-      *) break ;;
-    esac
-  done
-  return 1
-}
-
-# 热加载标记：用户配置 mtime + 最近项目配置（路径|mtime）；
-# 包含路径使 cd 进出项目、切换项目也触发重载。
+# 热加载标记：用户配置 mtime | 当前目录 | 注册表 mtime | [项目规则路径|mtime]。
+# 含 $PWD 使 cd 进出项目触发重载；注册表 mtime 使项目位置变更立即生效；
+# 项目规则文件 mtime 使 add/remove 在下一个提示符前生效。
 _shr_marker() {
   local m pc
   m=$(stat -f %m "$_SHR_CONFIG" 2>/dev/null || stat -c %Y "$_SHR_CONFIG" 2>/dev/null || echo 0)
-  if pc=$(_shr_project_config); then
+  m="$m|$PWD|$(stat -f %m "$HOME/.shr/projects.toml" 2>/dev/null || stat -c %Y "$HOME/.shr/projects.toml" 2>/dev/null || echo 0)"
+  pc="${_SHR_PROJECT_PATH:-}"
+  if [ -n "$pc" ]; then
     m="$m|$pc|$(stat -f %m "$pc" 2>/dev/null || stat -c %Y "$pc" 2>/dev/null || echo 0)"
   fi
   printf '%s\n' "$m"
@@ -121,22 +108,19 @@ func (c *Config) GenPosixFuncs() string {
 	return c.genPosixFuncs("")
 }
 
-// GenPosixFuncsFor 与 GenPosixFuncs 相同，但显式指定项目级配置子目录（projDir），
-// 供 _gen posix 使用，确保 SHR_PROJECT_DIR 的生效值随配置（env/[__shr].project_dir）同步。
-func (c *Config) GenPosixFuncsFor(projDir string) string {
-	return c.genPosixFuncs(projDir)
+// GenPosixFuncsFor 与 GenPosixFuncs 相同，但显式指定当前目录的项目规则文件路径
+// （projPath，可为空），供 _gen posix 使用，输出 _SHR_PROJECT_PATH 供热加载标记。
+func (c *Config) GenPosixFuncsFor(projPath string) string {
+	return c.genPosixFuncs(projPath)
 }
 
-func (c *Config) genPosixFuncs(projDir string) string {
-	d := projDir
-	if d == "" {
-		d = c.ProjectDir
-	}
-	if d == "" {
-		d = defaultProjectDir
-	}
+func (c *Config) genPosixFuncs(projPath string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "_SHR_PROJECT_DIR=${SHR_PROJECT_DIR:-%s}\n", shSingleQuote(d))
+	if projPath != "" {
+		fmt.Fprintf(&b, "_SHR_PROJECT_PATH=%s\n", shSingleQuote(projPath))
+	} else {
+		b.WriteString("_SHR_PROJECT_PATH=''\n")
+	}
 	// _shr_pick 随热加载一起重新定义：老会话的 prelude 可能是旧版（无此函数），
 	// 仅靠 init 注入会让多值分支引用未定义函数；放在此处保证 _gen posix 自洽。
 	b.WriteString(posixPickFunc)
