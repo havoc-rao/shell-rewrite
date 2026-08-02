@@ -42,11 +42,18 @@ func (n *Node) empty() bool {
 // AllowDuplicates 控制是否允许同一缩写注册多个展开值：为 true（默认）时
 // `add` 追加候选、运行时命中多值弹 TUI 选择；为 false 时 `add` 命中已存在
 // 即报错，避免静默覆盖。
+//
+// EnabledSet / AllowDuplicatesSet 记录对应开关是否在该文件中显式设置（用于
+// 项目级合并：仅显式设置的项目文件才会覆盖用户级）；ProjectDir 是项目级配置
+// 子目录名（[__shr].project_dir，默认 .shr）。
 type Config struct {
-	Roots           map[string]*Node
-	Aliases         map[string][]string
-	Enabled         bool
-	AllowDuplicates bool
+	Roots              map[string]*Node
+	Aliases            map[string][]string
+	Enabled            bool
+	AllowDuplicates    bool
+	EnabledSet         bool
+	AllowDuplicatesSet bool
+	ProjectDir         string
 }
 
 // NewConfig 创建空配置（默认开启复写、允许重复）。

@@ -17,6 +17,7 @@ git lg                  →  git log --oneline --graph --all
 - **下钻组合**：中间层也可定义缩写，`colink d u` 与 `colink data u` 等价
 - **前缀模式**：`"b+" = "branch"` 一条规则覆盖 `b`、`br`、`bra`、`bran`、`branc`
 - **零运行时开销**：规则编译成 shell 嵌套 `case` 函数，执行时不fork外部进程
+- **项目级配置**：`<项目根>/.shr/rules.toml`（目录名可自定义）与用户级规则合并，只在特定项目内生效
 - **展开回显**：缩写命中时以暗色打印展开后的完整命令（`SHR_ECHO=0` 关闭，非交互终端自动禁用）
 - **热加载**：每次渲染提示符前检测配置变更，自动重新编译（zsh/bash）
 - **安全透传**：token 失配即停止匹配，剩余参数原样保留，flag 值永远不会被误展开
@@ -113,7 +114,7 @@ shr on                                # 恢复复写
 
 ## 配置文件
 
-`~/.config/shr/rules.toml`（遵循 `XDG_CONFIG_HOME`），嵌套表即规则树：
+**用户级**：`~/.config/shr/rules.toml`（遵循 `XDG_CONFIG_HOME`），嵌套表即规则树：
 
 ```toml
 [colink]
@@ -127,18 +128,7 @@ d = "download"
 [git]
 co = "checkout"
 "b+" = "branch"                      # 前缀模式：b、br、bra、bran、branc 均可
-lg = "log --oneline --graph --all"   # 展开值可带参数（作为终点）
-
-[git.submodule]
-up = "update --init"
-
-[__shr.aliases]                       # 一级命令名缩写（argv[0] → target）
-c = "clear"                           # c → clear
-g = "git"                             # g → git（下钻 [git] 规则树）
-"c+" = "clear"                        # 前缀：c / cl / cle / clea → clear
-```
-
-可直接手工编辑，之后运行 `shr doctor` 校验。文件变更会在下一个提示符前自动生效，无需重启 shell。
+lg = "log --oneline --graph --all"   # 展开值可
 
 ## 工作原理
 
@@ -168,18 +158,9 @@ colink() {
 
 | 命令 | 说明 |
 |---|---|
-| `shr init [zsh\|bash]` | 输出 shell 集成代码（默认按 `$SHELL` 探测） |
+| `shr init [zsh\|bash\|project]` | 输出 shell 集成代码（默认按 `$SHELL` 探测）；`project` 在当前目录生成项目级规则文件 `<project_dir>/rules.toml` |
 | `shr setup` | 交互式配置向导（TUI，自动探测 shell 与 PATH） |
 | `shr setup --yes` | 非交互应用（脚本/CI）；`--uninstall` 移除 |
-| `shr add <cmd> <path...> <expansion>` | 注册规则（3+ 参数：子命令缩写）；2 参数时为一级命令名缩写（`add c clear`） |
-| `shr remove <cmd> <path...>` | 删除规则或命名空间（2+ 参数）；1 参数删一级命令名缩写 |
-| `shr list` | 树形列出全部规则 |
-| `shr expand <argv...>` | 显示命令行的展开结果 |
-| `shr doctor` | 校验规则冲突 |
-| `shr path` | 打印配置文件路径 |
-| `shr on` / `shr off` | 开启/关闭复写（关闭后 wrapper 退化为透传，下一个提示符生效） |
-| `shr status` | 查看复写开关状态 |
-| `shr update [version] [--check]` | 从 GitHub Releases 自更新到最新（或指定）版本 |
 
 ## 路线图
 

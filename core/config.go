@@ -5,6 +5,49 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/BurntSushi/toml"
+)
+
+// metaKey 是 rules.toml 中保留的元信息表名，不作为命令根解析。
+// 其中 enabled 控制复写开关（shr on / shr off），
+// allow_duplicates 控制是否允许同一缩写注册多个展开值（shr dup on / off），
+// project_dir 自定义项目级配置的子目录名（默认 .shr）。
+const metaKey = "__shr"
+
+// defaultProjectDir 是项目级配置的默认子目录（相对项目根）：<项目根>/.shr/rules.toml。
+// 可用环境变量 SHR_PROJECT_DIR 或用户配置的 [__shr] project_dir 覆盖（如 .vscode/shr）。
+const defaultProjectDir = ".shr"
+
+// Path 返回用户级规则文件路径：$XDG_CONFIG_HOME/shr/rules.toml 或 ~/.config/shr/rules.toml。
+func Path() string {
+	base := os.Getenv("XDG_CONFIG_HOME")
+	if base == "" {
+		home, _ := os.UserHomeDir()
+		base = filepath.Join(home, ".config")
+	}
+	return filepath.Join(base, "shr", "rules.toml")
+}
+
+// Load 从默认路径加载（用户级）配置；文件不存在时返回空配置。
+func Load() (*Config, error) { return LoadFrom(Path()) }
+
+// LoadFrom 从指定路径加载配置。
+//
+// TOML 结构即嵌套规则树，同一层中字符串值是叶子规则、子表是命名空间；
+// 一个缩写可有多个展开值，用数组表示（单值仍可写成字符串，向后兼容）：
+//
+//	[colink]
+//	d  = "data"        # 缩写 → 命名空间名（下钻）
+//	st = "status"      # 普通叶子
+package core
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/BurntSushi/toml"
 )

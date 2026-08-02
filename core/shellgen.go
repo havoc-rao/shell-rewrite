@@ -63,13 +63,13 @@ _shr_echo() {
 const posixReloadFunc = `_shr_reload_if_stale() {
   command -v shr >/dev/null 2>&1 || return 0
   local m
-  m=$(_shr_mtime) || return 0
+  m=$(_shr_marker) || return 0
   if [ "$m" != "$_SHR_LOADED_MTIME" ]; then
     _SHR_LOADED_MTIME="$m"
     eval "$(shr _gen posix)"
   fi
 }
-_SHR_LOADED_MTIME=$(_shr_mtime)
+_SHR_LOADED_MTIME=$(_shr_marker)
 
 `
 
@@ -113,6 +113,40 @@ func (c *Config) GenPosixFuncs() string {
 //
 // 前缀模式（"c+"）为每个未被更具体规则覆盖的前缀各生成一个同名函数。
 func (c *Config) genAliasFuncs() string {
+// GenPosixFuncs 生成全部 wrapper 函数（bash/zsh 通用），热加载时重新 eval 即可生效。
+// Enabled 为 false 时退化为透传函数（command <cmd> "$@"），保留函数定义以便
+// shr on 后热加载无缝恢复。一级命令名别名始终保留命令名替换（否则缩写名
+// 会变成找不到的命令），仅在 Enabled 时下钻目标规则树。
+func (c *Config) GenPosixFuncs() string {
+	return c.genPosixFuncs("")
+}
+
+// GenPosixFuncsFor 与 GenPosixFuncs 相同，但显式指定项目级配置子目录（projDir），
+// 供 _gen posix 使用，确保 SHR_PROJECT_DIR 的生效值随配置（env/[__shr].project_dir）同步。
+func (c *Config) GenPosixFuncsFor(projDir string) string {
+	return c.genPosixFuncs(projDir)
+}
+
+func (c *Config) genPosixFuncs(projDir string) string {
+	d := projDir
+	if d == "" {
+		d = c.ProjectDir
+	}
+	if d == "" {
+		d = defaultProjectDir
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "_SHR_PROJECT_DIR=${SHR_PROJECT_DIR:-%s}\n", shSingleQuote(d))
+	// _shr_pick 随热加载一起重新定义：老会话的 prelude 可能是旧版（无此函数），
+	// 仅靠 init 注入会让多值分支引用未定义函数；放在此处保证 _gen posix 自洽。
+	b.WriteString(posixPickFunc)
+	for _, cmd := range c.SortedRoots() {
+		if c.Enabled {
+			b.WriteString(genFunc(cmd, c.Roots[cmd]))
+		} else {
+			b.WriteString(genPassthrough(cmd))
+		}
+		b.WriteString("\
 	var b strings.Builder
 	for _, abbr := range c.SortedAliases() {
 		targets := c.Aliases[abbr]
