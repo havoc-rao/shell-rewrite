@@ -31,26 +31,26 @@ var helpText = helpTexts{
 	Usage: `shr — shell command shortener: rewrite commands by rules before execution
 
 Usage:
-  shr init                               guided project setup: configure rules dir in current project
+  shr init, -i                           guided project setup: configure rules dir in current project
   shr init [zsh|bash]                    print shell integration code (eval "$(shr init zsh)")
   shr init project                       non-interactive: scaffold project rules file
   shr setup                              interactive setup wizard (TUI, writes rc)
-  shr add <cmd> <path...> <expansion>    register a rule (3+ args: subcommand abbrev; default = project, -g = global)
+  shr add, -a <cmd> <path...> <expansion>  register a rule (3+ args: subcommand abbrev; default = project, -g = global)
   shr add <abbr> <target>                register a top-level command alias (2 args)
-  shr remove <cmd> <path...>             remove a rule or namespace (2+ args)
+  shr remove, -rm <cmd> <path...>         remove a rule or namespace (2+ args)
   shr remove <abbr>                      remove a top-level alias (1 arg)
-  shr list                               show all rules as a tree
-  shr expand <argv...>                   show what a command expands to
+  shr list, -l                           show all rules as a tree
+  shr expand, -e <argv...>               show what a command expands to
   shr doctor                             check rules for conflicts
-  shr path                               print user rules path; project rules path if inside a project
-  shr config set-path <dir> [-g]         set rules subdir (e.g. .vscode): current project, or -g for global default
+  shr path, -p                           print user rules path; project rules path if inside a project
+  shr config, -c set-path <dir> [-g]     set rules subdir (e.g. .vscode): current project, or -g for global default
   shr config get-path                    show effective rules subdir, source and file path
   shr config unset-path [-g]             remove per-project registration (-g: clear global default)
   shr on | shr off [-g]                  enable/disable rewriting
-  shr status                             show whether rewriting is enabled
+  shr status, -s                         show whether rewriting is enabled
   shr dup on|off [-g]                    allow/disallow multi-value abbrevs (default on)
-  shr update [version] [--check]         self-update from GitHub Releases
-  shr version                            print version
+  shr update, -u [version] [--check]     self-update from GitHub Releases
+  shr version, -v                        print version
 
 Project-level rules:
   git 仓库（或含 project_dir 目录）即视为项目：<项目根>/<规则目录>/rules.toml，

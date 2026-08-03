@@ -21,11 +21,28 @@ var (
 	Date    = "unknown"
 )
 
+// shortCommands 顶层命令的短别名（shr -i → shr init）。
+// 已占用的顶层短参：-v（version）、-h（help）；-g 保留给子命令级 --global，故都不占用。
+var shortCommands = map[string]string{
+	"-i":  "init",
+	"-a":  "add",
+	"-rm": "remove",
+	"-l":  "list",
+	"-e":  "expand",
+	"-s":  "status",
+	"-p":  "path",
+	"-c":  "config",
+	"-u":  "update",
+}
+
 // Run 执行 CLI，返回进程退出码。
 func Run(args []string) int {
 	if len(args) < 2 {
 		fmt.Print(helpText.Usage)
 		return 2
+	}
+	if cmd, ok := shortCommands[args[1]]; ok {
+		args[1] = cmd
 	}
 	switch args[1] {
 	case "init":
